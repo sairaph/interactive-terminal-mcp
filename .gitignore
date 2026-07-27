@@ -1,0 +1,5 @@
+.env
+interactive-terminal-mcp
+dist/
+coverage.out
+*.test

@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      # The daemon multiplexes PTY readers, emulator writes, log writers,
+      # broadcasters, and socket handlers, so the race detector runs on every
+      # build rather than only on release.
+      - run: go test -race ./...
+      - run: CGO_ENABLED=0 go build -trimpath .
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath .
+
+  windows-vet:
+    # The Windows ConPTY and named-pipe paths cannot run on a Linux runner, but
+    # compiling them here stops them rotting silently between Windows releases.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: GOOS=windows GOARCH=amd64 go vet ./...
+      - run: GOOS=darwin GOARCH=arm64 go vet ./...
+      - name: Compile the Windows test binaries
+        run: |
+          for package in ./internal/session ./internal/daemon ./internal/ipc ./internal/keys ./internal/vterm; do
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o /dev/null "$package"
+          done
