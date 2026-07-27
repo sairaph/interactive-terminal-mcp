@@ -361,12 +361,6 @@ func (m *model) viewConfigure() string {
 			line = styleDim.Render(stripStyles(line))
 		}
 		body.WriteString(line + "\n")
-		// Explain an unusable client only while it is highlighted.
-		if state.panel == 0 && index == state.cursor {
-			if detail := harness.Detail(); detail != "" {
-				body.WriteString(styleDim.Render("      "+detail) + "\n")
-			}
-		}
 	}
 
 	heading := panelHeading("Settings", state.panel == 1)

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -47,83 +46,20 @@ func (h Harness) Selectable() bool {
 	return h.State != detectharness.Unavailable && h.ConfigError == ""
 }
 
-// StatusText renders the harness state for a person, in at most three words.
+// StatusText renders the harness state for a person, in at most two words.
 //
-// The list is scanned, not read, so each row answers one question: what is the
-// state of this client with respect to us. The full explanation for a client
-// that cannot be used lives in Detail, shown only for the highlighted row.
+// A client that cannot be used is still just "not detected" as far as the list
+// is concerned: the user wants to know whether it is there, not why the
+// library could not reach it. The reason, when there is one, is available in
+// Detail for the highlighted row.
 func (h Harness) StatusText() string {
 	switch {
 	case h.Configured:
-		return "connected"
+		return "configured"
 	case h.State == detectharness.Detected:
-		return "installed"
-	case h.State == detectharness.NotDetected && h.ConfigError == "":
-		return "not installed"
+		return "detected"
 	default:
-		return shortReason(h.diagnostic())
-	}
-}
-
-// diagnostic is the single explanation behind an unusable client. The library
-// often sets Reason and ConfigError to the same text, so they are deduplicated
-// rather than concatenated into a stutter.
-func (h Harness) diagnostic() string {
-	reason := strings.TrimSpace(h.Reason)
-	configError := strings.TrimSpace(h.ConfigError)
-	switch {
-	case configError == "":
-		return reason
-	case reason == "" || reason == configError:
-		return configError
-	default:
-		return reason + "; " + configError
-	}
-}
-
-// Detail is the full explanation behind a short status, or empty when the
-// status already says everything.
-func (h Harness) Detail() string {
-	if h.Selectable() {
-		return ""
-	}
-	return h.diagnostic()
-}
-
-// platformName is the operating system as a person would name it, so a status
-// reads "not on macOS" rather than "not on darwin".
-func platformName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "macOS"
-	case "windows":
-		return "Windows"
-	case "linux":
-		return "Linux"
-	default:
-		return runtime.GOOS
-	}
-}
-
-// shortReason compresses a library diagnostic into something a person can act
-// on at a glance. Most of these are platform mismatches rather than genuine
-// failures, and calling them all "could not inspect" hid that.
-func shortReason(reason string) string {
-	lowered := strings.ToLower(reason)
-	switch {
-	case strings.Contains(lowered, "permission"):
-		return "no permission"
-	case strings.Contains(lowered, "ambiguous"):
-		return "ambiguous config"
-	case strings.Contains(lowered, "no supported"),
-		strings.Contains(lowered, "only defined for"),
-		strings.Contains(lowered, "is not available"),
-		strings.Contains(lowered, "is required"):
-		return "not on " + platformName()
-	case strings.Contains(lowered, "symlink"), strings.Contains(lowered, "symbolic link"):
-		return "symlinked config"
-	default:
-		return "config unreadable"
+		return "not detected"
 	}
 }
 

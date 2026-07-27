@@ -436,14 +436,6 @@ func (m *installModel) viewHarnesses() string {
 		fmt.Fprintf(&out, " %s %s %s\n", cursor, mark, line)
 	}
 
-	// The full explanation belongs to one row at a time. Printing it on every
-	// row turns a scannable list into a wall of diagnostics.
-	if m.cursor < len(m.harnesses) {
-		if detail := m.harnesses[m.cursor].Detail(); detail != "" {
-			out.WriteString("\n" + styleDim.Render("  "+detail))
-		}
-	}
-
 	hidden := len(m.harnesses) - len(indices)
 	if hidden > 0 && !m.showAll {
 		out.WriteString("\n" + styleDim.Render(fmt.Sprintf("  press v to show %d client(s) that are not installed", hidden)))
