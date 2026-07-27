@@ -279,8 +279,8 @@ Single `tea.Program` in the alternate screen, following
 INTERACTIVE TERMINAL
 
   NAME       ID         STATE     SIZE     LAST ACTIVITY   LOG
-> build      t-k3f9qa   running   120x30   3s ago          1842 lines
-  (unnamed)  t-p2m8wd   exited 0  120x30   26m ago         96 lines
+> build      t-k3f9qa   running   160x48   3s ago          1842 lines
+  (unnamed)  t-p2m8wd   exited 0  160x48   26m ago         96 lines
 
   enter attach   n new   k kill   r rename   a set active
   c configure clients   s settings   q quit
@@ -337,8 +337,8 @@ version = 1
 list_token_budget = 2000      # it_list
 read_token_budget = 4000      # it_tail, it_head
 
-default_cols = 120
-default_rows = 30
+default_cols = 160
+default_rows = 48
 default_wait_seconds = 5      # it_send
 settle_quiet_ms = 250
 maximum_wait_seconds = 300
@@ -411,7 +411,7 @@ confirms with a change list before applying.
 MCP tool configuration
 Recommended defaults
 
-Terminal size               120x30
+Terminal size               160x48
 Default wait                5s
 List output                 ~2000 tokens
 Log output                  ~4000 tokens

@@ -117,7 +117,7 @@ build can still read it.
 
 ### Size
 
-Sessions are created at a typical virtual size, `120x30` by default
+Sessions are created at a typical virtual size, `160x48` by default
 (configurable). `it_new` accepts `cols` and `rows`; `it_read` accepts them too
 and resizes before snapshotting, which is how an agent gives a pager or TUI
 more room. The human application resizes the session to the real terminal size
@@ -176,7 +176,7 @@ name: build
 active: true
 running: true
 pid: 48213
-size: [120, 30]
+size: [160, 48]
 cursor: [12, 41]
 alt_screen: false
 title: make -j8
@@ -256,7 +256,7 @@ sessions:
     pid: 48213
     command: /bin/bash
     cwd: /home/lael/project
-    size: [120, 30]
+    size: [160, 48]
     alt_screen: false
     title: make -j8
     created_at: 2026-07-27T09:12:03Z
@@ -271,7 +271,7 @@ sessions:
     exited_at: 2026-07-27T09:05:10Z
     command: /bin/bash
     cwd: /home/lael
-    size: [120, 30]
+    size: [160, 48]
     created_at: 2026-07-27T08:58:02Z
     last_activity_at: 2026-07-27T09:05:10Z
     transcript_lines: 96

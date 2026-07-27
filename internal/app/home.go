@@ -19,6 +19,9 @@ func (m *model) handleHomeKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.renaming {
 		return m.handleRenameKey(message)
 	}
+	if m.naming {
+		return m.handleNameKey(message)
+	}
 
 	switch message.String() {
 	case "q", "ctrl+c":
@@ -44,11 +47,16 @@ func (m *model) handleHomeKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = len(m.sessions)
 	case "enter":
 		if m.cursor == newSessionRow {
-			return m, m.createSession()
+			m.startNaming()
+			return m, nil
 		}
 		return m, m.openSession(m.selected().ID)
 	case "n":
-		return m, m.createSession()
+		m.startNaming()
+		return m, nil
+	case "N":
+		// Skip the prompt for anyone who wants a session immediately.
+		return m, m.createSession("")
 	case "backspace", "delete", "d":
 		if m.cursor == newSessionRow {
 			return m, nil
@@ -159,6 +167,33 @@ func (m *model) confirmStopDaemon() tea.Cmd {
 	return nil
 }
 
+// startNaming asks for the optional session name before creating one. The
+// prompt is skippable with a bare enter, so naming stays optional while still
+// being offered -- a session that is never named is much harder to pick out of
+// a list later.
+func (m *model) startNaming() {
+	m.naming = true
+	m.nameInput = newComposer()
+	m.nameInput.setSize(m.width-4, 1)
+	m.status = "Name for the new session (optional) · enter create · esc cancel"
+}
+
+func (m *model) handleNameKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch message.String() {
+	case "esc", "ctrl+c":
+		m.naming, m.nameInput = false, nil
+		m.status = ""
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.nameInput.Value())
+		m.naming, m.nameInput = false, nil
+		m.status = ""
+		return m, m.createSession(name)
+	}
+	m.nameInput.update(message)
+	return m, nil
+}
+
 func (m *model) startRename(info ipc.SessionInfo) {
 	if info.ID == "" {
 		return
@@ -188,7 +223,7 @@ func (m *model) handleRenameKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // --- commands ---------------------------------------------------------------
 
-func (m *model) createSession() tea.Cmd {
+func (m *model) createSession(name string) tea.Cmd {
 	ctx, runtime := m.ctx, m.runtime
 	return func() tea.Msg {
 		client, err := runtime.Dial(ctx)
@@ -198,6 +233,7 @@ func (m *model) createSession() tea.Cmd {
 		defer client.Close()
 		var screen ipc.Screen
 		args := ipc.NewArgs{
+			Name: name,
 			Cols: m.terminalWidth(), Rows: m.terminalHeight(),
 			WaitMS: 1500,
 		}
@@ -295,8 +331,16 @@ func (m *model) viewHome() string {
 		out.WriteString(styleFooter.Render("  enter confirm · esc cancel"))
 		return out.String()
 	}
+	if m.naming {
+		out.WriteString(m.nameInput.view("  name: ", true) + "\n")
+		out.WriteString(styleFooter.Render("  enter create (blank for none) · esc cancel"))
+		if m.status != "" {
+			out.WriteString("\n  " + m.status)
+		}
+		return out.String()
+	}
 
-	out.WriteString(styleFooter.Render("  ↑↓ navigate · enter open · n new · backspace delete · r rename"))
+	out.WriteString(styleFooter.Render("  ↑↓ navigate · enter open · n new · N new unnamed · backspace delete · r rename"))
 	out.WriteByte('\n')
 	out.WriteString(styleFooter.Render("  a set active · c configure · q quit"))
 	if m.status != "" {

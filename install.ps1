@@ -126,11 +126,22 @@ if (-not (Test-Path $Target) -or (Get-Item $Target).Length -eq 0) {
   return
 }
 
-# --- add to user PATH if missing (silent on success) -----------------------
+# --- add to user PATH if missing -------------------------------------------
+# SetEnvironmentVariable updates the stored user PATH, which only new processes
+# read. This shell keeps the PATH it started with, so the command is not found
+# here no matter what we do -- the user has to be told, or the very next thing
+# they type fails with "not recognized".
+$pathChanged = $false
 $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
 if ($userPath -notlike "*$InstallDir*") {
   $newPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
   [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+  $pathChanged = $true
+}
+# Make it work in this session too, so `configure` below and anything the user
+# tries immediately afterwards can find the binary without reopening a console.
+if ($env:PATH -notlike "*$InstallDir*") {
+  $env:PATH = "$InstallDir;$env:PATH"
 }
 
 # --- launch the configurer --------------------------------------------------
@@ -140,4 +151,19 @@ try {
 } catch {
   Write-Host "  configure did not complete: $_" -ForegroundColor Red
   Write-Host "  Re-run '$Binary configure' later to finish setup." -ForegroundColor Yellow
+}
+
+# --- tell the user what to do next ------------------------------------------
+Write-Host ""
+if ($pathChanged) {
+  Write-Host "  Added to your PATH: $InstallDir" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "  Open a NEW PowerShell window before running $Binary." -ForegroundColor Yellow
+  Write-Host "  This window still has the PATH it started with, so the command" -ForegroundColor Yellow
+  Write-Host "  will not be found here." -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "  In a new window:  $Binary"
+  Write-Host "  Or right now:     & '$Target'"
+} else {
+  Write-Host "  Run '$Binary' to browse and use your sessions."
 }

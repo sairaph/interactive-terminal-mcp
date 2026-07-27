@@ -33,9 +33,9 @@ session is `enter` on a freshly opened application with nothing selected yet.
 │                                                                          │
 │  > + New session                                                         │
 │                                                                          │
-│    ● build       t-k3f9qa   running   120x30    3s ago      1842 lines   │
-│    ● dev-server  t-w81mza   running   120x30    1m ago      412 lines    │
-│    ○ (unnamed)   t-p2m8wd   exit 0    120x30    26m ago     96 lines     │
+│    ● build       t-k3f9qa   running   160x48    3s ago      1842 lines   │
+│    ● dev-server  t-w81mza   running   160x48    1m ago      412 lines    │
+│    ○ (unnamed)   t-p2m8wd   exit 0    160x48    26m ago     96 lines     │
 │                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────╯
   ↑↓ navigate · enter open · n new · backspace delete · r rename
@@ -192,7 +192,7 @@ and save nothing.
 │        Amazon Q             could not inspect: permission denied         │
 │                                                                          │
 │  Settings                          Recommended defaults                  │
-│    Terminal size                   120x30                                │
+│    Terminal size                   160x48                                │
 │    Default wait                    5s                                    │
 │    List output                     ~2000 tokens                          │
 │    Log output                      ~4000 tokens                          │

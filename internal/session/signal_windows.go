@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+
+	"golang.org/x/sys/windows"
 )
 
 // signal ends the process tree.
@@ -25,18 +27,35 @@ func (s *Session) signal(name string) error {
 	default:
 		return fmt.Errorf("unsupported signal %q", name)
 	}
+
 	command := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
-	if output, err := command.CombinedOutput(); err != nil {
-		// taskkill is present on every supported Windows version, but if it
-		// cannot run, killing the process alone still ends the session.
-		if s.command.Process != nil {
-			if killErr := s.command.Process.Kill(); killErr == nil {
-				return nil
-			}
-		}
-		return fmt.Errorf("terminate process tree: %w (%s)", err, string(output))
+	// Without this, taskkill allocates its own console and a window flashes on
+	// screen every time a session is ended.
+	command.SysProcAttr = &windows.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW,
 	}
-	return nil
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	// taskkill reports failure when any process in the tree has already gone,
+	// which is routine: the shell often exits the moment its children do. Fall
+	// back to the process itself, and treat an already-dead process as success.
+	if s.command.Process != nil {
+		if killErr := s.command.Process.Kill(); killErr == nil {
+			return nil
+		}
+	}
+	// The caller asked for the session to stop. If it is stopping, or already
+	// stopped, that request was satisfied however taskkill chose to report it.
+	// Returning an error here would abort the caller before it could retire the
+	// session, leaving a dead entry in the list forever.
+	if !s.Running() {
+		return nil
+	}
+	return fmt.Errorf("terminate process tree: %w (%s)", err, string(output))
 }
 
 // signalExitCode reports the raw exit status; Windows has no signal encoding.

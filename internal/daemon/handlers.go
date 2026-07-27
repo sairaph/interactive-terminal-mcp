@@ -248,7 +248,17 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 
 	live := item.live
 	if err := live.Kill(signal, "it_kill"); err != nil && err != session.ErrExited {
-		return ipc.KillResult{}, internalError(err)
+		// A signal that reports failure while the process is on its way out is
+		// routine, especially on Windows where taskkill fails if any child has
+		// already gone. Only give up if the session is genuinely still alive
+		// afterwards; otherwise fall through and retire it, or the caller is
+		// told the kill failed while a dead entry stays in the list.
+		wait, cancel := context.WithTimeout(ctx, 2*time.Second)
+		exited := live.WaitExit(wait)
+		cancel()
+		if !exited && live.Running() {
+			return ipc.KillResult{}, internalError(err)
+		}
 	}
 
 	// INT is a request to the foreground program, not a guarantee it ends, so

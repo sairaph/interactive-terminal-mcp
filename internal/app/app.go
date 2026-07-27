@@ -43,12 +43,14 @@ type model struct {
 	height int
 
 	// home
-	sessions []ipc.SessionInfo
-	active   string
-	cursor   int
-	confirm  *confirmState
-	renaming bool
-	rename   *composer
+	sessions  []ipc.SessionInfo
+	active    string
+	cursor    int
+	confirm   *confirmState
+	renaming  bool
+	rename    *composer
+	naming    bool
+	nameInput *composer
 
 	// session view
 	session  *sessionView
@@ -271,6 +273,9 @@ func (m *model) resizeViews() {
 	m.composer.setSize(m.width-4, maxComposer)
 	if m.rename != nil {
 		m.rename.setSize(m.width-4, 1)
+	}
+	if m.nameInput != nil {
+		m.nameInput.setSize(m.width-4, 1)
 	}
 }
 

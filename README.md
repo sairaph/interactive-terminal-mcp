@@ -34,10 +34,9 @@ it detects your AI clients, lets you toggle which ones to wire up with the arrow
 keys, and asks how long to keep session logs. Run
 `interactive-terminal-mcp configure` anytime to change what's connected.
 
-> **Windows** - the ConPTY and named-pipe paths are compiled and type-checked in
-> CI on every build, but the first release has not yet been exercised on a real
-> Windows machine. Reports welcome on the
-> [issue tracker](https://github.com/sairaph/interactive-terminal-mcp/issues).
+> **After installing on Windows, open a new PowerShell window.** The installer
+> adds itself to your user `PATH`, but the window it ran in keeps the `PATH` it
+> started with, so `interactive-terminal-mcp` will not be found there.
 
 ## What it does
 
@@ -82,7 +81,19 @@ irm https://github.com/sairaph/interactive-terminal-mcp/raw/main/install.ps1 | i
 Each installer picks the right asset for your OS/arch
 (`interactive-terminal-mcp-<os>-<arch>[.exe]`) from the latest
 [GitHub Release](https://github.com/sairaph/interactive-terminal-mcp/releases).
-**Open a new terminal** afterward so `interactive-terminal-mcp` is found.
+
+**Open a new terminal afterward.** Both installers add themselves to your `PATH`,
+but a shell only reads `PATH` when it starts, so the window you installed from
+will not find the command. To use it immediately in that same window without
+reopening, run the binary by its full path:
+
+```powershell
+& "$env:LOCALAPPDATA\interactive-terminal-mcp\interactive-terminal-mcp.exe"
+```
+
+```bash
+~/.interactive-terminal-mcp/bin/interactive-terminal-mcp
+```
 
 There is nothing to log into. The server talks to your own machine, so there is
 no account, no token, and no third-party service anywhere in the path.
@@ -246,9 +257,9 @@ Run `interactive-terminal-mcp` in a terminal with no arguments:
 │                                                                          │
 │  > + New session                                                         │
 │                                                                          │
-│    ● build       t-k3f9qa   running   120x30    3s ago      1842 lines   │
-│    ● dev-server  t-w81mza   running   120x30    1m ago      412 lines    │
-│    ○ (unnamed)   t-p2m8wd   exit 0    120x30    26m ago     96 lines     │
+│    ● build       t-k3f9qa   running   160x48    3s ago      1842 lines   │
+│    ● dev-server  t-w81mza   running   160x48    1m ago      412 lines    │
+│    ○ (unnamed)   t-p2m8wd   exit 0    160x48    26m ago     96 lines     │
 │                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────╯
   ↑↓ navigate · enter open · n new · backspace delete · r rename
