@@ -74,7 +74,7 @@ func TestDetectDistinguishesHarnessStates(t *testing.T) {
 	if claude.Configured {
 		t.Error("a config holding only an unrelated server is not configured for us")
 	}
-	if claude.StatusText() != "detected" {
+	if claude.StatusText() != "installed" {
 		t.Errorf("status text: got %q", claude.StatusText())
 	}
 
@@ -249,8 +249,8 @@ func TestUninspectableHarnessesAreNotSelectable(t *testing.T) {
 	if harness.Selectable() {
 		t.Error("an uninspectable harness must not be selectable")
 	}
-	if !strings.Contains(harness.StatusText(), "could not inspect") {
-		t.Errorf("status should say it could not be inspected, got %q", harness.StatusText())
+	if harness.StatusText() != "no permission" {
+		t.Errorf("status should name the obstacle, got %q", harness.StatusText())
 	}
 
 	withError := Harness{ID: detectharness.Zed, Name: "Zed", ConfigError: "is a symlink"}
@@ -278,5 +278,66 @@ func TestSettingsRowsCoverEverySetting(t *testing.T) {
 	}
 	if !seen["log_retention"] {
 		t.Error("session log retention must be configurable; the installer asks about it")
+	}
+}
+
+// Status text is scanned in a list, not read. Every value must be short enough
+// to sit in a column and mean something on its own.
+func TestStatusTextIsShortAndMeaningful(t *testing.T) {
+	cases := []struct {
+		name    string
+		harness Harness
+		want    string
+	}{
+		{"registered", Harness{Configured: true, State: detectharness.Detected}, "connected"},
+		{"present", Harness{State: detectharness.Detected}, "installed"},
+		{"absent", Harness{State: detectharness.NotDetected}, "not installed"},
+		{"wrong platform", Harness{
+			State:  detectharness.Unavailable,
+			Reason: "Claude Desktop has no supported Linux config path",
+		}, "not on " + platformName()},
+		{"permission", Harness{
+			State: detectharness.Unavailable, Reason: "cannot inspect /x: permission denied",
+		}, "no permission"},
+		{"ambiguous", Harness{
+			State:       detectharness.Unavailable,
+			ConfigError: "both opencode.jsonc and opencode.json exist; the authoritative config is ambiguous",
+		}, "ambiguous config"},
+		{"symlink", Harness{State: detectharness.Unavailable, ConfigError: "config is a symlink"}, "symlinked config"},
+		{"unknown", Harness{State: detectharness.Unavailable, Reason: "something else entirely"}, "config unreadable"},
+	}
+
+	for _, testCase := range cases {
+		got := testCase.harness.StatusText()
+		if got != testCase.want {
+			t.Errorf("%s: got %q, want %q", testCase.name, got, testCase.want)
+		}
+		if words := len(strings.Fields(got)); words > 3 {
+			t.Errorf("%s: %q is %d words; three is the limit for a list column", testCase.name, got, words)
+		}
+		if strings.Contains(got, ":") {
+			t.Errorf("%s: %q leaks a raw diagnostic into the status column", testCase.name, got)
+		}
+	}
+}
+
+// The full explanation belongs to the highlighted row only, and must not
+// stutter when the library sets Reason and ConfigError to the same text.
+func TestDetailIsDeduplicatedAndOnlyForUnusableClients(t *testing.T) {
+	same := "Claude Desktop has no supported Linux config path"
+	harness := Harness{State: detectharness.Unavailable, Reason: same, ConfigError: same}
+	if got := harness.Detail(); got != same {
+		t.Errorf("duplicate reason and config error should collapse, got %q", got)
+	}
+
+	both := Harness{State: detectharness.Unavailable, Reason: "a", ConfigError: "b"}
+	if got := both.Detail(); got != "a; b" {
+		t.Errorf("distinct explanations should both survive, got %q", got)
+	}
+
+	// A client the user can actually select needs no explanation.
+	usable := Harness{State: detectharness.Detected}
+	if got := usable.Detail(); got != "" {
+		t.Errorf("a selectable client should have no detail, got %q", got)
 	}
 }

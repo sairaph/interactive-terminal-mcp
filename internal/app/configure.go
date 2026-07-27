@@ -356,11 +356,17 @@ func (m *model) viewConfigure() string {
 		}
 		line := fmt.Sprintf("  %s %-22s %s", mark, harness.Name, harness.StatusText())
 		if state.panel == 0 && index == state.cursor {
-			line = styleSelect.Render(padTo(">"+line[1:], m.width-6))
+			line = styleSelect.Render(padTo(">"+stripStyles(line)[1:], m.width-6))
 		} else if !harness.Selectable() {
-			line = styleDim.Render(line)
+			line = styleDim.Render(stripStyles(line))
 		}
 		body.WriteString(line + "\n")
+		// Explain an unusable client only while it is highlighted.
+		if state.panel == 0 && index == state.cursor {
+			if detail := harness.Detail(); detail != "" {
+				body.WriteString(styleDim.Render("      "+detail) + "\n")
+			}
+		}
 	}
 
 	heading := panelHeading("Settings", state.panel == 1)
