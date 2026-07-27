@@ -233,7 +233,12 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 	}
 
 	settings := d.registry.settingsSnapshot()
-	result := ipc.KillResult{Killed: item.id(), Name: item.name(), Signal: signal}
+	if args.Purge {
+		// A purge is the caller saying "forget this", so the retention policy
+		// that would otherwise keep the entry does not apply to it.
+		settings.LogRetention = config.RetentionOnClose
+	}
+	result := ipc.KillResult{Killed: item.id(), Name: item.name(), Signal: signal, Purged: args.Purge}
 
 	if !item.running() {
 		// Killing an already-finished session is not an error: the caller's

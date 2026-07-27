@@ -154,6 +154,8 @@ func (m *installModel) updateHarnesses(message tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.showAll = !m.showAll
 	case " ":
 		m.toggle()
+	case "a":
+		m.toggleAll()
 	case "enter":
 		m.step = stepRetention
 		m.choiceCursor = retentionIndex(m.settings.LogRetention)
@@ -339,6 +341,28 @@ func (m *installModel) moveCursor(direction int) {
 	m.cursor = indices[position]
 }
 
+// toggleAll selects every selectable harness, or clears them all if they are
+// already selected. One key for both directions keeps it discoverable.
+func (m *installModel) toggleAll() {
+	anyUnselected := false
+	for _, harness := range m.harnesses {
+		if harness.Selectable() && !m.selected[harness.ID] {
+			anyUnselected = true
+			break
+		}
+	}
+	for _, harness := range m.harnesses {
+		if harness.Selectable() {
+			m.selected[harness.ID] = anyUnselected
+		}
+	}
+	if anyUnselected {
+		m.message = "Selected every detected client."
+	} else {
+		m.message = "Cleared every client."
+	}
+}
+
 func (m *installModel) toggle() {
 	if m.cursor >= len(m.harnesses) {
 		return
@@ -399,11 +423,11 @@ func (m *installModel) viewHarnesses() string {
 		if index == m.cursor && harness.Selectable() {
 			cursor = styleCursor.Render(">")
 		}
-		mark := styleOff.Render("[ ]")
+		mark := styleOff.Render("○")
 		if !harness.Selectable() {
-			mark = styleDim.Render("   ")
+			mark = styleDim.Render("·")
 		} else if m.selected[harness.ID] {
-			mark = styleOn.Render("[x]")
+			mark = styleOn.Render("●")
 		}
 		line := fmt.Sprintf("%-22s %s", harness.Name, styleDim.Render(harness.StatusText()))
 		if !harness.Selectable() {
@@ -421,7 +445,7 @@ func (m *installModel) viewHarnesses() string {
 	if m.message != "" {
 		out.WriteString("\n\n  " + m.message)
 	}
-	out.WriteString("\n\n" + styleFooter.Render("  ↑↓ move · space toggle · v show all · enter continue · q cancel"))
+	out.WriteString("\n\n" + styleFooter.Render("  ↑↓ move · space toggle · a all/none · v show all · enter continue · q cancel"))
 	return out.String()
 }
 

@@ -144,6 +144,10 @@ func (m *model) handleConfigureKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if state.panel == 0 {
 			state.toggleHarness()
 		}
+	case "a":
+		if state.panel == 0 {
+			state.toggleAllHarnesses()
+		}
 	case "enter":
 		if state.panel == 0 {
 			state.toggleHarness()
@@ -221,6 +225,28 @@ func (state *configureState) itemCount() int {
 		return len(state.harnesses)
 	}
 	return len(install.SettingsRows)
+}
+
+// toggleAllHarnesses selects every selectable harness, or clears them all if
+// they are already selected.
+func (state *configureState) toggleAllHarnesses() {
+	anyUnselected := false
+	for _, harness := range state.harnesses {
+		if harness.Selectable() && !state.selected[harness.ID] {
+			anyUnselected = true
+			break
+		}
+	}
+	for _, harness := range state.harnesses {
+		if harness.Selectable() {
+			state.selected[harness.ID] = anyUnselected
+		}
+	}
+	if anyUnselected {
+		state.message = "Selected every client; press s to save."
+	} else {
+		state.message = "Cleared every client; press s to save."
+	}
 }
 
 func (state *configureState) toggleHarness() {
@@ -321,12 +347,12 @@ func (m *model) viewConfigure() string {
 		body.WriteString(styleDim.Render("  no clients detected") + "\n")
 	}
 	for index, harness := range state.harnesses {
-		mark := "[ ]"
+		mark := styleOff.Render("○")
 		if state.selected[harness.ID] {
-			mark = "[x]"
+			mark = styleRunning.Render("●")
 		}
 		if !harness.Selectable() {
-			mark = "   "
+			mark = styleDim.Render("·")
 		}
 		line := fmt.Sprintf("  %s %-22s %s", mark, harness.Name, harness.StatusText())
 		if state.panel == 0 && index == state.cursor {
@@ -375,7 +401,7 @@ func (m *model) viewConfigure() string {
 	if state.editing {
 		out.WriteString(styleFooter.Render("  enter confirm · esc cancel"))
 	} else {
-		out.WriteString(styleFooter.Render("  tab panels · ↑↓ select · space toggle · enter edit · s save · d restore defaults · esc back"))
+		out.WriteString(styleFooter.Render("  tab panels · ↑↓ select · space toggle · a all/none · enter edit · s save · d restore defaults · esc back"))
 	}
 	out.WriteByte('\n')
 	if state.message != "" {

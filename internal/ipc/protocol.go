@@ -151,6 +151,13 @@ type SendArgs struct {
 type KillArgs struct {
 	Session string `json:"session"`
 	Signal  string `json:"signal,omitempty"`
+	// Purge forgets the session entirely rather than retaining it.
+	//
+	// Killing and deleting are different intents. An agent that ends a build
+	// still wants to read what it printed, so it_kill retains the session under
+	// the configured log policy. A person who chose "Delete" in the application
+	// wants it gone, and leaving the row on screen reads as a broken button.
+	Purge bool `json:"purge,omitempty"`
 }
 
 // KillResult reports what ended the session and what happened to its logs.
@@ -163,6 +170,7 @@ type KillResult struct {
 	LogsRetained bool   `json:"logs_retained"`
 	LogPath      string `json:"log_path,omitempty"`
 	AlreadyGone  bool   `json:"already_gone"`
+	Purged       bool   `json:"purged,omitempty"`
 }
 
 // LogArgs reads a session transcript.

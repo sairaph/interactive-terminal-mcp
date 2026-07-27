@@ -16,6 +16,7 @@ var (
 	styleWarn    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	styleActive  = lipgloss.NewStyle().Bold(true)
 	styleSelect  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("61"))
+	styleOff     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	styleBadge   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("232")).Background(lipgloss.Color("214")).Padding(0, 1)
 )
 

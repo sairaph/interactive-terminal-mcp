@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/sairaph/interactive-terminal-mcp/internal/config"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 )
 
@@ -114,12 +113,7 @@ func (m *model) confirmDelete(info ipc.SessionInfo) {
 		details = append(details, fmt.Sprintf("It already ended with exit code %d.", *info.ExitCode))
 	}
 
-	retention := m.runtime.Config.LogRetention
-	if retention == config.RetentionOnClose {
-		details = append(details, "Its logs will be deleted immediately (retention: when the session is closed).")
-	} else {
-		details = append(details, "Its logs will be kept ("+strings.ToLower(config.RetentionLabel(retention))+").")
-	}
+	details = append(details, "It is removed from this list and its logs are deleted.")
 
 	id := info.ID
 	m.confirm = &confirmState{
@@ -253,7 +247,10 @@ func (m *model) killSession(id string) tea.Cmd {
 		}
 		defer client.Close()
 		var result ipc.KillResult
-		if err := client.Call(ctx, ipc.OpSessionKill, ipc.KillArgs{Session: id}, &result); err != nil {
+		// Purge, not just kill: the button says Delete, so the row must go.
+		// Retention governs how long an agent can still read a finished
+		// session's log, not whether a session the user deleted stays on screen.
+		if err := client.Call(ctx, ipc.OpSessionKill, ipc.KillArgs{Session: id, Purge: true}, &result); err != nil {
 			return errorMsg{err}
 		}
 		if result.Escalated {
