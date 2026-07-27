@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +39,9 @@ type Options struct {
 	Cwd         string
 	Env         map[string]string
 	Cols, Rows  int
+	// Shell names the interpreter a command line runs through, by short name
+	// ("powershell", "bash") or full path. Empty means the machine default.
+	Shell string
 
 	Directory          string
 	ScrollbackLines    int
@@ -75,6 +77,13 @@ type Session struct {
 	// distinguishes a session that has finished from one that has not started.
 	outputBytes atomic.Int64
 
+	// processDone is closed the instant the child exits, before any of the
+	// bookkeeping that follows. Reporting liveness from the end of that
+	// bookkeeping made a dead session look alive for as long as the drain took,
+	// which spuriously escalated a TERM that had already worked and made two
+	// consecutive reads disagree about whether the session was running.
+	processDone chan struct{}
+
 	// pumpDone is closed when the reader goroutine has drained the PTY and
 	// returned, so the reaper can append the final screen knowing no more
 	// output is coming.
@@ -93,7 +102,7 @@ func New(options Options) (*Session, error) {
 		options.Rows = 30
 	}
 
-	argv, shell, err := resolveCommand(options)
+	argv, shell, usedShell, err := resolveCommand(options)
 	if err != nil {
 		return nil, err
 	}
@@ -142,13 +151,15 @@ func New(options Options) (*Session, error) {
 		subs:    newBroadcaster(),
 
 		activity:     make(chan struct{}),
+		processDone:  make(chan struct{}),
 		pumpDone:     make(chan struct{}),
 		done:         make(chan struct{}),
 		lastActivity: now,
 	}
 	session.metadata = Metadata{
 		ID: options.ID, Name: options.Name, Command: argv,
-		CommandLine: options.CommandLine, Shell: shell,
+		CommandLine: options.CommandLine, Shell: usedShell,
+		ShellID: shell.ID, ShellPath: shell.Path, ShellName: shell.Display,
 		Cwd: cwd, Env: options.Env, Cols: options.Cols, Rows: options.Rows,
 		PID: commandPID(command), CreatedAt: now, LastActivityAt: now,
 	}
@@ -204,48 +215,32 @@ func (s *Session) answerQueries() {
 	}
 }
 
-// resolveCommand decides what to execute. A string command line goes through
-// the login shell so shell syntax works; an argv array is executed directly so
-// no quoting is needed.
-func resolveCommand(options Options) (argv []string, shell bool, err error) {
+// resolveCommand decides what to execute.
+//
+// A string command line goes through a shell so shell syntax works; an argv
+// array is executed directly so no quoting is needed. The chosen shell is
+// returned so the caller can report what actually started, which matters most
+// on Windows where the answer is not obvious.
+func resolveCommand(options Options) (argv []string, shell Shell, usedShell bool, err error) {
 	if len(options.Argv) > 0 {
 		if strings.TrimSpace(options.Argv[0]) == "" {
-			return nil, false, errors.New("command array's first element must be a program name")
+			return nil, Shell{}, false, errors.New("command array's first element must be a program name")
 		}
 		resolved, lookErr := exec.LookPath(options.Argv[0])
 		if lookErr != nil {
-			return nil, false, fmt.Errorf("command %q was not found on PATH", options.Argv[0])
+			return nil, Shell{}, false, fmt.Errorf("command %q was not found on PATH", options.Argv[0])
 		}
-		return append([]string{resolved}, options.Argv[1:]...), false, nil
+		return append([]string{resolved}, options.Argv[1:]...), Shell{}, false, nil
 	}
-	loginShell := userShell()
-	if strings.TrimSpace(options.CommandLine) == "" {
-		return []string{loginShell}, true, nil
-	}
-	if runtime.GOOS == "windows" {
-		return []string{loginShell, "/c", options.CommandLine}, true, nil
-	}
-	return []string{loginShell, "-lc", options.CommandLine}, true, nil
-}
 
-func userShell() string {
-	if runtime.GOOS == "windows" {
-		if shell := os.Getenv("COMSPEC"); shell != "" {
-			return shell
-		}
-		return "cmd.exe"
+	chosen, err := ResolveShell(options.Shell)
+	if err != nil {
+		return nil, Shell{}, false, err
 	}
-	if shell := os.Getenv("SHELL"); shell != "" {
-		if _, err := os.Stat(shell); err == nil {
-			return shell
-		}
+	if strings.TrimSpace(options.CommandLine) == "" {
+		return []string{chosen.Path}, chosen, true, nil
 	}
-	for _, candidate := range []string{"/bin/bash", "/bin/zsh", "/bin/sh"} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return "/bin/sh"
+	return chosen.Argv(options.CommandLine), chosen, true, nil
 }
 
 // buildEnv merges the caller's variables over the inherited environment and
@@ -309,6 +304,14 @@ func (s *Session) reap() {
 	err := s.command.Wait()
 	code := exitCode(err)
 
+	// Publish the exit immediately. Everything below is bookkeeping, and a
+	// caller asking "did it stop" deserves the answer now rather than after
+	// the logs have been flushed.
+	s.mu.Lock()
+	s.exited, s.exitCode, s.exitedAt = true, code, time.Now().UTC()
+	s.mu.Unlock()
+	close(s.processDone)
+
 	// The child exiting does not end the PTY stream: this process still holds
 	// the slave descriptor open, so reads from the master would block forever
 	// instead of draining and reporting EOF. Releasing the slave lets the pump
@@ -333,8 +336,11 @@ func (s *Session) reap() {
 
 	now := time.Now().UTC()
 	s.mu.Lock()
-	s.exited, s.exitCode, s.exitedAt = true, code, now
-	s.metadata.ExitedAt = &now
+	// A copy, not the address of the field: the metadata is marshalled later
+	// without this lock, and handing out a pointer into the session would let
+	// the encoder read a field another goroutine may be writing.
+	exitedAt := s.exitedAt
+	s.metadata.ExitedAt = &exitedAt
 	s.metadata.ExitCode = &code
 	s.metadata.LastActivityAt = now
 	s.metadata.TranscriptLine = s.logs.lineCount()
@@ -423,6 +429,33 @@ func (s *Session) ExitCode() (int, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.exitCode, s.exited
+}
+
+// startedShell reports whether this session runs a shell rather than one
+// program started directly. The distinction decides which question means
+// "finished": a shell is idle between commands, a direct program is not.
+func (s *Session) startedShell() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.metadata.Shell
+}
+
+// CommandBusy reports whether the terminal definitely has a command running.
+//
+// True is proof. False is not: a shell loop such as `while :; do ...; done`
+// executes inside the shell process itself, so the terminal's foreground group
+// never leaves the shell even though a command is very much running. Treating
+// that as "finished" is exactly how an interrupt a program ignored came to be
+// reported as successful.
+func (s *Session) CommandBusy() (busy bool, proven bool) {
+	if !s.Running() {
+		return false, true
+	}
+	busy, known := s.foregroundBusy()
+	if !known || !busy {
+		return false, false
+	}
+	return true, true
 }
 
 // OutputBytes reports how many bytes the child has written since it started.
@@ -577,7 +610,7 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 		case <-deadline:
 			quietTimer.Stop()
 			return SettleResult{Settled: false, Waited: time.Since(start), Exited: !s.Running()}
-		case <-s.done:
+		case <-s.processDone:
 			quietTimer.Stop()
 			// Let the reaper append the final screen before returning.
 			select {
@@ -607,9 +640,13 @@ func (s *Session) Subscribe() (<-chan []byte, func()) { return s.subs.subscribe(
 
 // Kill ends the session. signal selects how.
 //
-// INT writes the interrupt character to the PTY rather than signalling the
-// child, because under a shell the child is the shell: a SIGINT to the shell
-// does not reach the foreground program, while ^C on the line discipline does.
+// INT asks the foreground program to stop rather than signalling the child,
+// because under a shell the child is the shell: a SIGINT delivered to it does
+// not reach whatever it is currently running. How that is done differs by
+// platform; see interrupt_unix.go and interrupt_windows.go.
+//
+// An interrupt is a request, not a guarantee. A program is free to ignore it,
+// and the caller must observe the outcome rather than assume one.
 func (s *Session) Kill(signal string, by string) error {
 	if !s.Running() {
 		return ErrExited
@@ -622,7 +659,7 @@ func (s *Session) Kill(signal string, by string) error {
 	case "", "TERM":
 		return s.signal("TERM")
 	case "INT":
-		return s.Write([]byte{0x03})
+		return s.interrupt()
 	case "HUP":
 		return s.signal("HUP")
 	case "KILL":
@@ -632,8 +669,28 @@ func (s *Session) Kill(signal string, by string) error {
 	}
 }
 
-// WaitExit blocks until the session ends or the context is cancelled.
+// WaitExit blocks until the child process ends or the context is cancelled.
+//
+// It waits on the process rather than on the finalisation that follows it, so
+// a caller that signalled a session learns it worked as soon as it did. Use
+// WaitFinalized before reading logs: the last of the output is still being
+// written when this returns.
 func (s *Session) WaitExit(ctx context.Context) bool {
+	select {
+	case <-s.processDone:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// WaitFinalized blocks until the session's output is completely on disk and
+// its metadata is durable.
+//
+// This is the signal a log reader needs. The process ending and its output
+// being fully recorded are different moments, and treating them as one either
+// delays every kill or hands back a truncated transcript.
+func (s *Session) WaitFinalized(ctx context.Context) bool {
 	select {
 	case <-s.done:
 		return true

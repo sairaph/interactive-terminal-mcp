@@ -84,6 +84,8 @@ type screenMetadata struct {
 	Cursor            []int  `yaml:"cursor,flow"`
 	AltScreen         bool   `yaml:"alt_screen"`
 	Title             string `yaml:"title,omitempty"`
+	Shell             string `yaml:"shell,omitempty"`
+	Command           string `yaml:"command,omitempty"`
 	Cwd               string `yaml:"cwd,omitempty"`
 	Settled           bool   `yaml:"settled"`
 	WaitedMS          int64  `yaml:"waited_ms"`
@@ -100,7 +102,8 @@ func screenFront(screen ipc.Screen) screenMetadata {
 		Running: info.Running, ExitCode: info.ExitCode, PID: info.PID,
 		Size:      []int{info.Cols, info.Rows},
 		Cursor:    []int{screen.Cursor[0], screen.Cursor[1]},
-		AltScreen: info.AltScreen, Title: info.Title, Cwd: info.Cwd,
+		AltScreen: info.AltScreen, Title: info.Title,
+		Shell: info.Shell, Command: commandText(info), Cwd: info.Cwd,
 		Settled: screen.Settled, WaitedMS: screen.WaitedMS,
 		LastActivityAt:    formatTime(info.LastActivityAt),
 		BlankLinesTrimmed: screen.BlankLinesTrimmed,
@@ -150,9 +153,15 @@ func newGuidance(screen ipc.Screen) []string {
 			"The command finished%s before this call returned. Read its output with `%s`.",
 			exitPhrase(info), call("it_tail", map[string]any{"session": info.ID}))}
 	}
+	opening := fmt.Sprintf("Session %s is active", label(info))
+	if info.Shell != "" {
+		// Which interpreter is running decides the syntax of every command the
+		// caller is about to write, and on Windows it is not guessable.
+		opening += fmt.Sprintf(", running %s", info.Shell)
+	}
 	return []string{fmt.Sprintf(
-		"Session %s is active. Type into it with `%s`, and read it again later with `%s`.",
-		label(info),
+		"%s. Type into it with `%s`, and read it again later with `%s`.",
+		opening,
 		call("it_send", map[string]any{"text": "echo hello"}),
 		call("it_read", map[string]any{"session": info.ID}))}
 }
@@ -261,6 +270,7 @@ type listRow struct {
 	KilledBy        string `yaml:"killed_by,omitempty"`
 	PID             int    `yaml:"pid,omitempty"`
 	Command         string `yaml:"command,omitempty"`
+	Shell           string `yaml:"shell,omitempty"`
 	Cwd             string `yaml:"cwd,omitempty"`
 	Size            []int  `yaml:"size,flow"`
 	AltScreen       bool   `yaml:"alt_screen,omitempty"`
@@ -277,7 +287,7 @@ func renderList(result ipc.ListResult, page, tokenBudget int) (any, string, erro
 		rows = append(rows, listRow{
 			ID: info.ID, Name: info.Name, Active: info.Active, Running: info.Running,
 			ExitCode: info.ExitCode, KilledBy: info.KilledBy, PID: info.PID,
-			Command: commandText(info), Cwd: info.Cwd,
+			Command: commandText(info), Shell: info.Shell, Cwd: info.Cwd,
 			Size:      []int{info.Cols, info.Rows},
 			AltScreen: info.AltScreen, Title: info.Title,
 			CreatedAt: formatTime(info.CreatedAt), LastActivityAt: formatTime(info.LastActivityAt),
@@ -353,6 +363,8 @@ type killMetadata struct {
 	Escalated    bool   `yaml:"escalated"`
 	ExitCode     *int   `yaml:"exit_code,omitempty"`
 	AlreadyEnded bool   `yaml:"already_ended,omitempty"`
+	Outcome      string `yaml:"outcome,omitempty"`
+	ObservedMS   int64  `yaml:"observed_ms,omitempty"`
 	LogsRetained bool   `yaml:"logs_retained"`
 	LogPath      string `yaml:"log_path,omitempty"`
 }
@@ -362,6 +374,8 @@ func killFront(result ipc.KillResult) killMetadata {
 		Killed: result.Killed, Name: result.Name, Signal: result.Signal,
 		Escalated: result.Escalated, ExitCode: result.ExitCode,
 		AlreadyEnded: result.AlreadyGone,
+		Outcome:      result.Outcome,
+		ObservedMS:   result.ObservedMS,
 		LogsRetained: result.LogsRetained, LogPath: result.LogPath,
 	}
 }
@@ -377,16 +391,31 @@ func killBody(result ipc.KillResult) string {
 	case result.AlreadyGone:
 		parts = append(parts, fmt.Sprintf("Session %s had already ended%s; nothing was signalled.", name, exitCodePhrase(result.ExitCode)))
 	case result.Signal == "INT" && result.ExitCode == nil:
-		// An interrupt usually leaves the shell alive, which is the point of
-		// using it; saying so prevents a needless it_new.
-		return fmt.Sprintf(
-			"Sent an interrupt to session %s. The running command should have stopped, and the session is still usable. "+
-				"Check it with `%s`.",
-			name, call("it_read", map[string]any{"session": result.Killed}))
+		// Say what was established, and mark inference as inference. A program
+		// is free to ignore an interrupt, and a confident false success here
+		// makes every other success message less believable.
+		observed := formatDuration(result.ObservedMS)
+		switch result.Outcome {
+		case ipc.OutcomeStillRunning:
+			return fmt.Sprintf(
+				"Sent an interrupt to session %s, but it was still working %s later, so the command did not stop. "+
+					"End the session with `%s`, which cannot be ignored.",
+				name, observed,
+				call("it_kill", map[string]any{"session": result.Killed, "signal": "TERM"}))
+		case ipc.OutcomeQuiet:
+			return fmt.Sprintf(
+				"Sent an interrupt to session %s. Nothing further was printed in the following %s, which usually "+
+					"means the command stopped, but a slow command looks the same. Confirm with `%s` before relying on it.",
+				name, observed, call("it_read", map[string]any{"session": result.Killed}))
+		default:
+			return fmt.Sprintf(
+				"Sent an interrupt to session %s. What it did could not be established; check with `%s`.",
+				name, call("it_read", map[string]any{"session": result.Killed}))
+		}
 	case result.Escalated:
 		parts = append(parts, fmt.Sprintf(
-			"Session %s did not exit after TERM and was ended with KILL%s.",
-			name, exitCodePhrase(result.ExitCode)))
+			"Session %s did not exit after %s and was ended with KILL%s.",
+			name, result.Signal, exitCodePhrase(result.ExitCode)))
 	default:
 		parts = append(parts, fmt.Sprintf("Ended session %s with %s%s.", name, result.Signal, exitCodePhrase(result.ExitCode)))
 	}
@@ -426,19 +455,12 @@ func renderLog(result ipc.LogResult, requested int, fromEnd bool, tokenBudget in
 		return nil, "", &ipc.Error{Code: ipc.CodeInternal, Message: "apply the response budget: " + err.Error()}
 	}
 
+	// truncated_by describes a truncation, so it is only set when one happened.
+	// Emitting it alongside truncated: false said two contradictory things at
+	// once about whether output was missing.
 	truncatedBy := ""
-	switch {
-	case omitted > 0:
+	if omitted > 0 {
 		truncatedBy = "token_budget"
-	case len(result.Lines) < requested && result.TotalLines <= len(result.Lines):
-		// Fewer lines than asked for simply because the log is shorter. That
-		// is not truncation, and reporting it as such would suggest output is
-		// missing when none is.
-		if fromEnd {
-			truncatedBy = "log_start"
-		} else {
-			truncatedBy = "log_end"
-		}
 	}
 
 	front := logMetadata{
@@ -511,9 +533,13 @@ func logSummary(front logMetadata, which, tool string, result ipc.LogResult) str
 			front.LinesOmitted, dropped, plural(front.LinesOmitted, "line was", "lines were"))
 	}
 
-	// A caller that was given less than the whole log always gets a way to
-	// reach the rest, either through the other tool or straight from the file.
-	if front.LinesReturned < front.TotalLines {
+	// Point at something that can actually reach what was dropped. When the
+	// budget cut lines out of the middle of the requested range, the opposite
+	// end cannot return them -- only the file can, so say that first.
+	if front.LinesOmitted > 0 && front.LogPath != "" {
+		fmt.Fprintf(&summary, " Those lines are only reachable by reading `%s` directly; "+
+			"the other end of the log is a different part of the output.", front.LogPath)
+	} else if front.LinesReturned < front.TotalLines {
 		other := "it_head"
 		if tool == "it_head" {
 			other = "it_tail"

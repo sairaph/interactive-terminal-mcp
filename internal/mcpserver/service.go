@@ -16,6 +16,7 @@ import (
 	"github.com/sairaph/interactive-terminal-mcp/internal/config"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 	"github.com/sairaph/interactive-terminal-mcp/internal/keys"
+	"github.com/sairaph/interactive-terminal-mcp/internal/session"
 )
 
 const (
@@ -132,7 +133,7 @@ func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_new",
 		Description: "Create a terminal session, make it active, and return its first screen. " +
-			"With no command it starts your shell, which is usually what you want: you then run commands with it_send. " +
+			"With no command it starts " + defaultShellPhrase() + ", and you then run commands with it_send. " +
 			"Pass command to run one program instead. The session keeps running after this call returns, so long builds and servers are fine.",
 		InputSchema: newSchema(s.settings),
 	}, s.new)
@@ -167,15 +168,18 @@ func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_tail",
 		Description: "Return the most recent lines of a session's output log, plus its current screen. " +
-			"Use it for output that has scrolled off the screen, such as the end of a long build. " +
-			"Output from full-screen programs is not in the log because it never scrolls, which is why the live screen is included. Use it_head for the start of the log.",
+			"The log holds only what has scrolled off the top, so the newest output is on the screen rather than in it; " +
+			"both are returned and labelled. Output from full-screen programs never scrolls and so is never in the log. " +
+			"log_path in the reply is a real file you can open with ordinary file tools to reach anything not returned here. " +
+			"Use it_head for the start of the log.",
 		InputSchema: logSchema(true),
 	}, s.tail)
 
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_head",
 		Description: "Return the earliest lines of a session's output log. " +
-			"Use it to see how a session started, such as the first errors of a build whose ending you have already read with it_tail.",
+			"Use it to see how a session started, such as the first errors of a build whose ending you have already read with it_tail. " +
+			"log_path in the reply is a real file you can open with ordinary file tools to reach the middle, which neither end returns.",
 		InputSchema: logSchema(false),
 	}, s.head)
 }
@@ -266,10 +270,41 @@ func newSchema(settings config.Config) map[string]any {
 			"additionalProperties": map[string]any{"type": "string"},
 			"description":          "Extra environment variables, merged over the inherited environment",
 		},
-		"cols": colsProperty(settings),
-		"rows": rowsProperty(settings),
-		"wait": waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
+		"shell": shellProperty(),
+		"cols":  colsProperty(settings),
+		"rows":  rowsProperty(settings),
+		"wait":  waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
 	})
+}
+
+// defaultShellPhrase names the interpreter a bare it_new will start, so a model
+// writing a command line knows which syntax applies before it guesses wrong.
+func defaultShellPhrase() string {
+	shell := session.DefaultShell()
+	if shell.Display == "" {
+		return "your shell"
+	}
+	return shell.Display + " (" + shell.ID + ")"
+}
+
+// shellProperty offers the interpreters actually installed here. Listing only
+// what exists means a model cannot pick something that will fail.
+func shellProperty() map[string]any {
+	ids := session.ShellIDs()
+	property := map[string]any{
+		"type": "string",
+		"description": "Which shell to run a string command through. Available here: " +
+			strings.Join(ids, ", ") + ". Defaults to " + defaultShellPhrase() +
+			". Ignored when command is an array, which is executed directly.",
+	}
+	if len(ids) > 0 {
+		enum := make([]any, 0, len(ids))
+		for _, id := range ids {
+			enum = append(enum, id)
+		}
+		property["enum"] = enum
+	}
+	return property
 }
 
 func readSchema(settings config.Config) map[string]any {
@@ -295,8 +330,9 @@ func sendSchema(settings config.Config) map[string]any {
 		"keys": stringProperty(
 			"Keystrokes, separated by semicolons. Named keys: " + strings.Join(keys.NamedKeys(), ", ") + ", F1-F20. " +
 				"Modifiers CTRL+, ALT+, SHIFT+ combine, as in \"CTRL+C\". " +
-				"Repeat a chord with *n, as in \"DOWN*5\". " +
-				"Text in double quotes is typed verbatim, as in 'i; \"hello\"; ESC'. " +
+				"Repeat anything with *n, including quoted text, as in \"DOWN*5\". " +
+				"Bare text is typed verbatim unless it matches a key name, so \":wq\" is typed but \"DOWN\" moves the cursor; " +
+				"quote it to force literal text, as in 'i; \"hello\"; ESC'. " +
 				"Arrow keys are encoded for whatever the running program expects, so they work inside vim and less."),
 		"enter": map[string]any{
 			"type": "boolean", "default": true,
@@ -399,10 +435,45 @@ func cleanValidationMessage(message string) string {
 	if trimmed == "" {
 		return message
 	}
+	if prose := asProse(property, trimmed); prose != "" {
+		return prose
+	}
 	if property != "" && !strings.HasPrefix(trimmed, property) {
 		return property + ": " + trimmed
 	}
 	return trimmed
+}
+
+// asProse rewrites the validator's bound checks as a sentence.
+//
+// Raw output reads "minimum: 10/1 is less than 20.000000", which is the only
+// machine-generated text an agent would meet in a product whose every other
+// message is written by hand.
+func asProse(property, message string) string {
+	if property == "" {
+		return ""
+	}
+	number := func(text string) string {
+		text = strings.TrimSpace(text)
+		text = strings.TrimSuffix(text, ".000000")
+		if index := strings.IndexByte(text, '/'); index > 0 {
+			text = text[:index]
+		}
+		return text
+	}
+	switch {
+	case strings.HasPrefix(message, "minimum:"):
+		parts := strings.SplitN(strings.TrimPrefix(message, "minimum:"), " is less than ", 2)
+		if len(parts) == 2 {
+			return fmt.Sprintf("%s must be at least %s (got %s)", property, number(parts[1]), number(parts[0]))
+		}
+	case strings.HasPrefix(message, "maximum:"):
+		parts := strings.SplitN(strings.TrimPrefix(message, "maximum:"), " is greater than ", 2)
+		if len(parts) == 2 {
+			return fmt.Sprintf("%s must be at most %s (got %s)", property, number(parts[1]), number(parts[0]))
+		}
+	}
+	return ""
 }
 
 func resultHasDocument(result *mcp.CallToolResult) bool {

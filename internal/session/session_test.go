@@ -63,6 +63,8 @@ func TestSessionRunsCommandAndCapturesExit(t *testing.T) {
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit in time")
 	}
+	// Reading the transcript needs the finalisation that follows the exit.
+	session.WaitFinalized(contextWithTimeout(t, 10*time.Second))
 	code, exited := session.ExitCode()
 	if !exited || code != 7 {
 		t.Fatalf("exit: got (%d, %v), want (7, true)", code, exited)
@@ -154,6 +156,7 @@ func TestTranscriptCapturesScrolledOffOutput(t *testing.T) {
 	if !session.WaitExit(contextWithTimeout(t, 15*time.Second)) {
 		t.Fatal("session did not exit in time")
 	}
+	session.WaitFinalized(contextWithTimeout(t, 15*time.Second))
 	session.Flush()
 
 	head, err := Head(session.TranscriptPath(), 5)
@@ -258,6 +261,7 @@ func TestKillTerminatesAndRecordsCause(t *testing.T) {
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit after TERM")
 	}
+	session.WaitFinalized(contextWithTimeout(t, 10*time.Second))
 	metadata := session.Metadata()
 	if metadata.KilledBy != "it_kill" {
 		t.Errorf("KilledBy: got %q, want %q", metadata.KilledBy, "it_kill")
@@ -285,6 +289,7 @@ func TestMetadataIsReadableFromDisk(t *testing.T) {
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit")
 	}
+	session.WaitFinalized(contextWithTimeout(t, 10*time.Second))
 
 	// A restarted daemon reconstructs exited sessions from this file alone.
 	metadata, err := ReadMetadata(directory)
@@ -310,6 +315,7 @@ func TestEnvironmentIsMergedAndTerminalIsDescribed(t *testing.T) {
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit")
 	}
+	session.WaitFinalized(contextWithTimeout(t, 10*time.Second))
 	session.Flush()
 	slice, _ := Tail(session.TranscriptPath(), 50)
 	text := strings.Join(slice.Lines, "\n")
@@ -484,4 +490,81 @@ func TestSilentCommandIsNotReportedAsSettled(t *testing.T) {
 		t.Error("a session that has produced nothing must not report settled")
 	}
 	_ = session.Kill("KILL", "test")
+}
+
+// A signalled session must be reported as stopped the moment its process is
+// gone, not after the log finalisation that follows. Conflating the two made a
+// TERM that had already worked look like it had been ignored, so every kill
+// paid the escalation timeout and reported using KILL when it had not.
+func TestExitIsVisibleBeforeFinalisation(t *testing.T) {
+	session := newTestSession(t, Options{
+		// Enough output that finalising the transcript takes real time.
+		Argv: []string{"sh", "-c", "i=1; while [ $i -le 4000 ]; do echo line-$i; i=$((i+1)); done; exit 0"},
+	})
+
+	if !session.WaitExit(contextWithTimeout(t, 15*time.Second)) {
+		t.Fatal("session did not exit")
+	}
+	// The process is gone, so liveness must already say so.
+	if session.Running() {
+		t.Error("Running() should be false as soon as the process has exited")
+	}
+	if _, exited := session.ExitCode(); !exited {
+		t.Error("the exit code should be available as soon as the process has exited")
+	}
+
+	// And finalisation still completes, so the log is whole afterwards.
+	if !session.WaitFinalized(contextWithTimeout(t, 15*time.Second)) {
+		t.Fatal("session was never finalised")
+	}
+	session.Flush()
+	slice, err := Tail(session.TranscriptPath(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(slice.Lines, "\n"), "line-4000") {
+		t.Errorf("the finalised transcript should hold the last line, got %q", slice.Lines)
+	}
+}
+
+// A session started without a command runs a shell, and which shell it is
+// decides the syntax of every command the caller then writes. On Windows that
+// is not guessable, so it is recorded rather than assumed.
+func TestSessionRecordsWhichShellItStarted(t *testing.T) {
+	session := newTestSession(t, Options{})
+	metadata := session.Metadata()
+
+	if !metadata.Shell {
+		t.Error("a session with no command should be flagged as running a shell")
+	}
+	if metadata.ShellID == "" || metadata.ShellPath == "" || metadata.ShellName == "" {
+		t.Errorf("the shell should be recorded, got %+v", metadata)
+	}
+	if len(metadata.Command) == 0 || metadata.Command[0] != metadata.ShellPath {
+		t.Errorf("the command should be the shell itself, got %v", metadata.Command)
+	}
+}
+
+func TestExplicitShellSelection(t *testing.T) {
+	available := ShellIDs()
+	if len(available) == 0 {
+		t.Skip("no shells detected")
+	}
+	session := newTestSession(t, Options{Shell: available[0]})
+	if got := session.Metadata().ShellID; got != available[0] {
+		t.Errorf("shell: got %q, want %q", got, available[0])
+	}
+
+	// An unavailable shell fails before anything starts, naming what is here.
+	_, err := New(Options{
+		ID: "t-noshell", Directory: t.TempDir(), Cols: 80, Rows: 24,
+		ScrollbackLines: 20_000, RawLogMaxBytes: 1 << 20, TranscriptMaxLines: 1_000,
+		Shell: "definitely-not-a-shell",
+	})
+	if err == nil {
+		t.Fatal("an unknown shell should be rejected")
+	}
+	if !strings.Contains(err.Error(), "installed shells are") {
+		t.Errorf("the error should list what is available, got %v", err)
+	}
 }

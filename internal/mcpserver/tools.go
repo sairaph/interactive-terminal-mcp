@@ -71,6 +71,7 @@ type newInput struct {
 	Command json.RawMessage   `json:"command,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	Shell   string            `json:"shell,omitempty"`
 	Cols    int               `json:"cols,omitempty"`
 	Rows    int               `json:"rows,omitempty"`
 	Wait    *float64          `json:"wait,omitempty"`
@@ -88,7 +89,8 @@ func (s *Service) new(ctx context.Context, _ *mcp.CallToolRequest, input newInpu
 
 	args := ipc.NewArgs{
 		Name: strings.TrimSpace(input.Name), CommandLine: commandLine, Argv: argv,
-		Cwd: input.Cwd, Env: input.Env, Cols: input.Cols, Rows: input.Rows, WaitMS: wait,
+		Cwd: input.Cwd, Env: input.Env, Shell: input.Shell,
+		Cols: input.Cols, Rows: input.Rows, WaitMS: wait,
 	}
 	var screen ipc.Screen
 	if err := s.call(ctx, ipc.OpSessionNew, args, &screen); err != nil {

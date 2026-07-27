@@ -24,6 +24,9 @@ type Metadata struct {
 	Command        []string          `json:"command"`
 	CommandLine    string            `json:"command_line,omitempty"`
 	Shell          bool              `json:"shell"`
+	ShellID        string            `json:"shell_id,omitempty"`
+	ShellPath      string            `json:"shell_path,omitempty"`
+	ShellName      string            `json:"shell_name,omitempty"`
 	Cwd            string            `json:"cwd"`
 	Env            map[string]string `json:"env,omitempty"`
 	Cols           int               `json:"cols"`

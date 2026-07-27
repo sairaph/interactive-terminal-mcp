@@ -91,6 +91,8 @@ type SessionInfo struct {
 	KilledBy        string     `json:"killed_by,omitempty"`
 	Command         []string   `json:"command,omitempty"`
 	CommandLine     string     `json:"command_line,omitempty"`
+	Shell           string     `json:"shell,omitempty"`
+	ShellPath       string     `json:"shell_path,omitempty"`
 	Cwd             string     `json:"cwd,omitempty"`
 	Cols            int        `json:"cols"`
 	Rows            int        `json:"rows"`
@@ -124,6 +126,7 @@ type NewArgs struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Cols        int               `json:"cols,omitempty"`
 	Rows        int               `json:"rows,omitempty"`
+	Shell       string            `json:"shell,omitempty"`
 	WaitMS      int64             `json:"wait_ms"`
 }
 
@@ -171,7 +174,27 @@ type KillResult struct {
 	LogPath      string `json:"log_path,omitempty"`
 	AlreadyGone  bool   `json:"already_gone"`
 	Purged       bool   `json:"purged,omitempty"`
+	// Outcome is what was actually observed after the signal, rather than what
+	// was intended. An interrupt is a request a program may ignore, so
+	// reporting success without looking would be a lie the caller cannot check.
+	Outcome string `json:"outcome,omitempty"`
+	// ObservedMS is how long the session was watched to reach that outcome.
+	ObservedMS int64 `json:"observed_ms,omitempty"`
 }
+
+// Outcomes reported after a signal.
+const (
+	// OutcomeEnded means the session's process exited.
+	OutcomeEnded = "ended"
+	// OutcomeQuiet means the session survived and stopped producing output,
+	// which is what a successful interrupt looks like from outside.
+	OutcomeQuiet = "quiet"
+	// OutcomeStillRunning means the session demonstrably kept working, so the
+	// interrupt was not obeyed.
+	OutcomeStillRunning = "still_running"
+	// OutcomeUnknown means the observation could not be completed.
+	OutcomeUnknown = "unknown"
+)
 
 // LogArgs reads a session transcript.
 type LogArgs struct {

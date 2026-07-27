@@ -18,6 +18,12 @@ import (
 // escalateAfter is how long a TERM is given before a KILL follows.
 const escalateAfter = 5 * time.Second
 
+// interruptObserveFor is how long an interrupted session is watched, after the
+// grace period, before its silence is taken to mean the command stopped. Long
+// enough to catch a command that prints periodically, short enough that the
+// caller is not left waiting.
+const interruptObserveFor = 2 * time.Second
+
 func (d *Daemon) handleList() (ipc.ListResult, error) {
 	entries := d.registry.list()
 	active := d.registry.activeID()
@@ -67,7 +73,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	live, err := session.New(session.Options{
 		ID: id, Name: name,
 		CommandLine: args.CommandLine, Argv: args.Argv,
-		Cwd: args.Cwd, Env: args.Env, Cols: cols, Rows: rows,
+		Cwd: args.Cwd, Env: args.Env, Cols: cols, Rows: rows, Shell: args.Shell,
 		Directory:          directory,
 		ScrollbackLines:    settings.ScrollbackLines,
 		RawLogMaxBytes:     settings.RawLogMaxBytes,
@@ -288,8 +294,12 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 		return result, nil
 	}
 
-	// After an interrupt the session usually survives; report its state rather
-	// than pretending it ended.
+	// An interrupt is a request the running program may ignore, so the outcome
+	// is established rather than assumed. Reporting success without looking is
+	// worse than reporting failure: it teaches the caller to distrust every
+	// other success message too.
+	result.Outcome, result.ObservedMS = d.observeInterrupt(ctx, live, settings)
+
 	if code, ok := live.ExitCode(); ok {
 		result.ExitCode = &code
 		d.retire(item, settings, &result)
@@ -334,6 +344,65 @@ func (d *Daemon) retire(item *entry, settings config.Config, result *ipc.KillRes
 	result.LogPath = filepath.Join(item.directory, "transcript.log")
 }
 
+// interruptGrace is how long an interrupt is given to land before anything is
+// concluded from what the session does.
+//
+// Two things happen in this window that would otherwise be misread. The shell
+// echoes "^C" and redraws its prompt, which is output but not evidence the
+// command survived. And the command itself takes a moment to die, during which
+// the terminal still shows it in the foreground.
+const interruptGrace = 600 * time.Millisecond
+
+// observeInterrupt reports what an interrupt actually achieved.
+//
+// Only two things can be proven: the session ended, or it is demonstrably still
+// working after being given a fair chance to stop. Everything else is
+// inference, and the wording downstream says so.
+func (d *Daemon) observeInterrupt(ctx context.Context, live *session.Session, settings config.Config) (string, int64) {
+	start := time.Now()
+
+	// Let the interrupt land before judging anything.
+	select {
+	case <-ctx.Done():
+		return ipc.OutcomeUnknown, time.Since(start).Milliseconds()
+	case <-time.After(interruptGrace):
+	case <-live.Done():
+	}
+	if !live.Running() {
+		return ipc.OutcomeEnded, time.Since(start).Milliseconds()
+	}
+
+	// Re-baseline after the grace period so the shell's own acknowledgement of
+	// the interrupt is not counted as the command carrying on.
+	baseline := live.OutputBytes()
+
+	deadline := time.After(interruptObserveFor)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ipc.OutcomeUnknown, time.Since(start).Milliseconds()
+		case <-deadline:
+			return ipc.OutcomeQuiet, time.Since(start).Milliseconds()
+		case <-ticker.C:
+			if !live.Running() {
+				return ipc.OutcomeEnded, time.Since(start).Milliseconds()
+			}
+			// Fresh output after the interrupt has had its chance is proof the
+			// command is still going.
+			if live.OutputBytes() != baseline {
+				return ipc.OutcomeStillRunning, time.Since(start).Milliseconds()
+			}
+			// So is the terminal still holding a command in the foreground.
+			if busy, proven := live.CommandBusy(); proven && busy {
+				return ipc.OutcomeStillRunning, time.Since(start).Milliseconds()
+			}
+		}
+	}
+}
+
 func (d *Daemon) handleLog(args ipc.LogArgs) (ipc.LogResult, error) {
 	item, err := d.registry.resolveOrActive(args.Session)
 	if err != nil {
@@ -346,6 +415,14 @@ func (d *Daemon) handleLog(args ipc.LogArgs) (ipc.LogResult, error) {
 
 	path := filepath.Join(item.directory, "transcript.log")
 	if item.live != nil {
+		// A session that has just exited is still writing its last screen to
+		// the transcript. Reading now would return a log that is missing
+		// exactly the ending the caller asked about.
+		if !item.live.Running() {
+			finalize, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			item.live.WaitFinalized(finalize)
+			cancel()
+		}
 		// Buffered writes must reach the file first, or a tail taken right
 		// after a command would miss the output the agent is asking about.
 		item.live.Flush()
@@ -529,6 +606,7 @@ func (d *Daemon) describeSession(item *entry, active string) ipc.SessionInfo {
 		info.PID = metadata.PID
 		info.Command = metadata.Command
 		info.CommandLine = metadata.CommandLine
+		info.Shell, info.ShellPath = metadata.ShellName, metadata.ShellPath
 		info.Cwd = metadata.Cwd
 		info.Cols, info.Rows = cols, rows
 		info.AltScreen = snapshot.AltScreen
@@ -548,6 +626,7 @@ func (d *Daemon) describeSession(item *entry, active string) ipc.SessionInfo {
 		info.PID = metadata.PID
 		info.Command = metadata.Command
 		info.CommandLine = metadata.CommandLine
+		info.Shell, info.ShellPath = metadata.ShellName, metadata.ShellPath
 		info.Cwd = metadata.Cwd
 		info.Cols, info.Rows = metadata.Cols, metadata.Rows
 		info.CreatedAt = metadata.CreatedAt

@@ -352,10 +352,37 @@ func TestKillResultShape(t *testing.T) {
 		t.Errorf("escalation must be reported:\n%s", document)
 	}
 
-	interrupt := ipc.KillResult{Killed: "t-k3f9qa", Signal: "INT", LogsRetained: true}
-	document = text(t, successResult(killFront(interrupt), killBody(interrupt)))
-	if !strings.Contains(document, "still usable") {
-		t.Errorf("an interrupt should say the session survives:\n%s", document)
+	// An interrupt is a request a program may ignore, so the report must
+	// describe what was observed rather than what was asked for.
+	stopped := ipc.KillResult{
+		Killed: "t-k3f9qa", Signal: "INT", LogsRetained: true,
+		Outcome: ipc.OutcomeQuiet, ObservedMS: 400,
+	}
+	document = text(t, successResult(killFront(stopped), killBody(stopped)))
+	// Silence is evidence, not proof, and the wording must not overstate it.
+	if !strings.Contains(document, "usually means the command stopped") {
+		t.Errorf("a quiet interrupt should describe what was observed:\n%s", document)
+	}
+	if !strings.Contains(document, "a slow command looks the same") {
+		t.Errorf("the inference should be marked as one:\n%s", document)
+	}
+	if !strings.Contains(document, "it_read") {
+		t.Errorf("the caller should be offered a way to confirm:\n%s", document)
+	}
+
+	ignored := ipc.KillResult{
+		Killed: "t-k3f9qa", Signal: "INT", LogsRetained: true,
+		Outcome: ipc.OutcomeStillRunning, ObservedMS: 3000,
+	}
+	document = text(t, successResult(killFront(ignored), killBody(ignored)))
+	if !strings.Contains(document, "did not stop") {
+		t.Errorf("an ignored interrupt must say so rather than claim success:\n%s", document)
+	}
+	if !strings.Contains(document, `"signal":"TERM"`) {
+		t.Errorf("an ignored interrupt should offer the escalation that cannot be ignored:\n%s", document)
+	}
+	if strings.Contains(document, "should have stopped") {
+		t.Errorf("no unverified claim may survive:\n%s", document)
 	}
 }
 
@@ -453,4 +480,75 @@ func firstLines(text string, count int) string {
 		lines = lines[:count]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// The validator's own wording is the only machine-generated text an agent
+// would meet in a product whose every other message is written by hand.
+func TestValidationMessagesAreProse(t *testing.T) {
+	cases := map[string]string{
+		`validating "arguments": validating root: validating /properties/cols: minimum: 10/1 is less than 20.000000`:         "cols must be at least 20 (got 10)",
+		`validating "arguments": validating root: validating /properties/wait: maximum: 100000/1 is greater than 300.000000`: "wait must be at most 300 (got 100000)",
+	}
+	for raw, want := range cases {
+		got := cleanValidationMessage(raw)
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if strings.Contains(got, "validating") || strings.Contains(got, ".000000") || strings.Contains(got, "/1") {
+			t.Errorf("validator internals leaked: %q", got)
+		}
+	}
+}
+
+// truncated_by describes a truncation. Emitting it when nothing was truncated
+// said two contradictory things at once about whether output was missing.
+func TestTruncatedByOnlyAppearsWithTruncation(t *testing.T) {
+	short := ipc.LogResult{
+		Session: sampleSession(), Lines: []string{"one", "two"}, TotalLines: 2,
+		LogPath: "/tmp/transcript.log",
+	}
+	front, _, err := renderLog(short, 100, true, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := front.(logMetadata)
+	if metadata.Truncated {
+		t.Error("a log shorter than the request is not truncated")
+	}
+	if metadata.TruncatedBy != "" {
+		t.Errorf("truncated_by should be absent when nothing was truncated, got %q", metadata.TruncatedBy)
+	}
+}
+
+// When the budget drops lines out of the middle of the requested range, the
+// opposite end of the log cannot return them. Pointing there wastes a call.
+func TestBudgetTruncationPointsAtTheFileNotTheOtherEnd(t *testing.T) {
+	var lines []string
+	for index := 1; index <= 400; index++ {
+		lines = append(lines, strings.Repeat("x", 60)+" line-"+itoa(index))
+	}
+	result := ipc.LogResult{
+		Session: sampleSession(), Lines: lines, TotalLines: 4000,
+		LogPath: "/tmp/transcript.log",
+	}
+	_, body, err := renderLog(result, 400, true, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "/tmp/transcript.log") {
+		t.Errorf("the file is the only way to reach the omitted lines:\n%s", body)
+	}
+	if strings.Contains(body, "Read the other end with") {
+		t.Errorf("it_head cannot reach the middle of the range:\n%s", body)
+	}
+}
+
+// The escalation message must name the signal that was actually sent.
+func TestEscalationNamesTheSignalAsked(t *testing.T) {
+	code := 137
+	result := ipc.KillResult{Killed: "t-k3f9qa", Signal: "HUP", Escalated: true, ExitCode: &code}
+	body := killBody(result)
+	if !strings.Contains(body, "did not exit after HUP") {
+		t.Errorf("the report should name HUP, not TERM:\n%s", body)
+	}
 }
