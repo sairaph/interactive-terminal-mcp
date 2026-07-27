@@ -426,3 +426,62 @@ func TestFullScreenEditorRoundTrip(t *testing.T) {
 		t.Errorf("file contents: got %q, want it to contain %q", content, "hello from vim")
 	}
 }
+
+// A session that has not produced anything yet must not be reported as
+// settled. A shell still starting up looks exactly like one that has finished
+// working, and calling that "settled" hands the agent a blank screen with a
+// claim that the command is done. This showed up on a loaded CI runner where
+// the shell took longer to start than the quiet window.
+func TestWaitSettledWaitsForTheFirstOutput(t *testing.T) {
+	session := newTestSession(t, Options{
+		Argv: []string{"sh", "-c", "sleep 1.2; printf 'late-output\\r\\n'; sleep 30"},
+	})
+
+	// The quiet window is far shorter than the delay before the first byte, so
+	// a naive quiet check would settle immediately on an empty screen.
+	result := session.WaitSettled(context.Background(), 10*time.Second, 150*time.Millisecond)
+	if !result.Settled {
+		t.Fatalf("the wait should settle once output arrives and stops, got %+v", result)
+	}
+	if result.Waited < time.Second {
+		t.Errorf("the wait returned after %v, before the command produced anything", result.Waited)
+	}
+	if text := session.Snapshot().Text(); !strings.Contains(text, "late-output") {
+		t.Errorf("a settled screen should hold the output that settled it, got %q", text)
+	}
+	_ = session.Kill("KILL", "test")
+}
+
+// A session with a drawn screen that is simply idle must still settle at once,
+// or every read of a waiting prompt would burn its whole budget.
+func TestWaitSettledReturnsImmediatelyOnAnIdleScreen(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 5*time.Second)
+
+	start := time.Now()
+	result := session.WaitSettled(context.Background(), 10*time.Second, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !result.Settled {
+		t.Error("an idle session that has already drawn should report settled")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("an idle screen took %v to settle; it should return promptly", elapsed)
+	}
+}
+
+// A command that genuinely produces nothing cannot be called settled, because
+// there is no evidence it did anything. Burning the budget and reporting
+// settled:false is the honest answer.
+func TestSilentCommandIsNotReportedAsSettled(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 30"}})
+
+	result := session.WaitSettled(context.Background(), 700*time.Millisecond, 150*time.Millisecond)
+	if result.Settled {
+		t.Error("a session that has produced nothing must not report settled")
+	}
+	_ = session.Kill("KILL", "test")
+}

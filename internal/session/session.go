@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aymanbagabas/go-pty"
@@ -69,6 +70,10 @@ type Session struct {
 	// can block on output without polling.
 	activityMu sync.Mutex
 	activity   chan struct{}
+
+	// outputBytes counts everything the child has ever written. It is what
+	// distinguishes a session that has finished from one that has not started.
+	outputBytes atomic.Int64
 
 	// pumpDone is closed when the reader goroutine has drained the PTY and
 	// returned, so the reaper can append the final screen knowing no more
@@ -283,6 +288,7 @@ func (s *Session) pump() {
 		n, err := s.pty.Read(buffer)
 		if n > 0 {
 			chunk := buffer[:n]
+			s.outputBytes.Add(int64(n))
 			s.logs.writeRaw(chunk)
 			_, _ = s.term.Write(chunk)
 			s.logs.writeTranscript(s.term.TakeEvictedLines())
@@ -419,6 +425,11 @@ func (s *Session) ExitCode() (int, bool) {
 	return s.exitCode, s.exited
 }
 
+// OutputBytes reports how many bytes the child has written since it started.
+// Zero means it has produced nothing at all, which is different from having
+// produced something and then gone quiet.
+func (s *Session) OutputBytes() int64 { return s.outputBytes.Load() }
+
 // LastActivity reports when the session last produced output.
 func (s *Session) LastActivity() time.Time {
 	s.mu.RLock()
@@ -547,6 +558,14 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 		return SettleResult{Settled: false, Waited: time.Since(start), Exited: !s.Running()}
 	}
 
+	// A session that has never produced anything cannot be called settled just
+	// because it is quiet: a shell that has not finished starting looks
+	// identical to one that has finished working. Waiting for the first byte
+	// distinguishes them. A session that has already drawn something is judged
+	// purely on the quiet window, so reading an idle prompt still returns at
+	// once.
+	needFirstOutput := s.OutputBytes() == 0
+
 	deadline := time.After(budget)
 	for {
 		activity := s.activityChannel()
@@ -569,7 +588,13 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 		case <-activity:
 			quietTimer.Stop()
 			// Output arrived; restart the quiet window.
+			needFirstOutput = false
 		case <-quietTimer.C:
+			if needFirstOutput && s.OutputBytes() == 0 {
+				// Still nothing at all. Keep waiting for the budget rather than
+				// reporting a blank screen as a finished one.
+				continue
+			}
 			return SettleResult{Settled: true, Waited: time.Since(start), Exited: !s.Running()}
 		}
 	}
