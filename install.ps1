@@ -1,44 +1,143 @@
-$ErrorActionPreference = "Stop"
-$owner = "sairaph"
-$repo = "interactive-terminal-mcp"
-$binary = "interactive-terminal-mcp"
+# interactive-terminal-mcp installer (Windows). Run in PowerShell:
+#   irm https://github.com/sairaph/interactive-terminal-mcp/raw/main/install.ps1 | iex
+$ErrorActionPreference = 'Stop'
+# Invoke-WebRequest's built-in progress bar is slow and flickers badly in
+# Windows PowerShell; the download below renders its own.
+$ProgressPreference    = 'SilentlyContinue'
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
-  "AMD64" { "amd64" }
-  "ARM64" { "arm64" }
-  default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
+$Owner  = 'sairaph'
+$Repo   = 'interactive-terminal-mcp'
+$Binary = 'interactive-terminal-mcp'
+
+# --- detect arch -----------------------------------------------------------
+$arch = $env:PROCESSOR_ARCHITECTURE
+switch ($arch) {
+  { $_ -in 'AMD64','x64' } { $target = 'windows-amd64' }
+  'ARM64'                  { $target = 'windows-arm64' }
+  default                  { Write-Host "  Unsupported architecture: $arch" -ForegroundColor Red; return }
 }
 
-$installDir = Join-Path $env:LOCALAPPDATA $repo
-$target = Join-Path $installDir "$binary.exe"
-$temporary = "$target.new"
-$asset = "$binary-windows-$arch.exe"
-$url = "https://github.com/$owner/$repo/releases/latest/download/$asset"
+$Asset = "$Binary-$target.exe"
+$Url   = "https://github.com/$Owner/$Repo/releases/latest/download/$Asset"
 
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Write-Host "Downloading $asset..."
-Invoke-WebRequest -Uri $url -OutFile $temporary
-
-# A running daemon holds this executable open, so stop it before replacing.
-if (Test-Path $target) {
-  try { & $target daemon --stop 2>$null | Out-Null } catch {}
-  Start-Sleep -Milliseconds 300
-}
-Move-Item -Force $temporary $target
-
-$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if (($userPath -split ";") -notcontains $installDir) {
-  $nextPath = if ($userPath) { "$installDir;$userPath" } else { $installDir }
-  [Environment]::SetEnvironmentVariable("PATH", $nextPath, "User")
-  Write-Host "Added $installDir to your user PATH"
-}
-
-Write-Host "Installed $target"
-try {
-  & $target configure
-} catch {
-  Write-Warning "Run '$binary configure' later to choose your AI clients: $_"
-}
+# --- install location ------------------------------------------------------
+$InstallDir = Join-Path $env:LOCALAPPDATA $Repo
+$Target     = Join-Path $InstallDir "$Binary.exe"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 Write-Host ""
-Write-Host "Open a new terminal, then run '$binary' to browse your sessions."
+Write-Host "  interactive-terminal-mcp installer" -ForegroundColor Cyan
+Write-Host ""
+
+# A running daemon holds the executable open. Ask it to stop before writing so
+# the common upgrade path does not hit a locked file at all.
+if (Test-Path $Target) {
+  try { & $Target daemon --stop 2>$null | Out-Null } catch {}
+  Start-Sleep -Milliseconds 300
+}
+
+Write-Host "  Downloading $Asset..."
+
+# If the old binary is still present, clear it so we can write fresh. If it is
+# locked (a session is still attached), fall back to a temp file and swap.
+$tempTarget = "$Target.new"
+$usingTemp  = $false
+Remove-Item $Target -Force -ErrorAction SilentlyContinue
+
+$request = $null
+$response = $null
+$stream = $null
+$fs = $null
+try {
+  $request = [System.Net.HttpWebRequest]::Create($Url)
+  $request.Method = "GET"
+  $response = $request.GetResponse()
+  $total = [int]$response.ContentLength
+  $stream = $response.GetResponseStream()
+  try {
+    $fs = [System.IO.File]::Create($Target)
+  } catch {
+    $fs = [System.IO.File]::Create($tempTarget)
+    $usingTemp = $true
+  }
+  $buffer = New-Object byte[] 65536
+  $downloaded = 0
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $lastUpdate = 0
+
+  $renderBar = {
+    param($dl, $tot, $el)
+    $pct = if ($tot -gt 0) { [math]::Round($dl / $tot * 100) } else { 0 }
+    if ($pct -gt 100) { $pct = 100 }
+    $filled = [math]::Floor($pct / 5)
+    if ($filled -gt 20) { $filled = 20 }
+    $bar = ('#' * $filled).PadRight(20)
+    $dlMB = [math]::Round($dl / 1048576, 1)
+    $totMB = [math]::Round($tot / 1048576, 1)
+    $speed = if ($el -gt 0) { [math]::Round($dlMB / $el, 1) } else { 0 }
+    $eta = if ($speed -gt 0) { [math]::Round((($totMB - $dlMB)) / $speed) } else { 0 }
+    $line = ("  [{0}] {1,3}%  {2}/{3} MB  {4} MB/s  ETA {5:00}s" -f $bar, $pct, $dlMB, $totMB, $speed, $eta)
+    # Pad so shorter lines fully overwrite the previous render (no stale chars).
+    Write-Host ("`r{0}" -f $line.PadRight(72)) -NoNewline
+  }
+
+  while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    $fs.Write($buffer, 0, $read)
+    $downloaded += $read
+    $now = [System.Environment]::TickCount
+    if ($now - $lastUpdate -gt 200) {
+      $lastUpdate = $now
+      & $renderBar $downloaded $total $sw.Elapsed.TotalSeconds
+    }
+  }
+  # Force a final 100% render.
+  & $renderBar $downloaded $total $sw.Elapsed.TotalSeconds
+  Write-Host ""
+} catch {
+  Write-Host ""
+  Write-Host "  Download failed: $_" -ForegroundColor Red
+  Write-Host "  URL: $Url" -ForegroundColor Red
+  Remove-Item $Target -ErrorAction SilentlyContinue
+  Remove-Item $tempTarget -ErrorAction SilentlyContinue
+  return
+} finally {
+  if ($fs -ne $null) { $fs.Close() }
+  if ($stream -ne $null) { $stream.Close() }
+  if ($response -ne $null) { $response.Close() }
+}
+
+# If we downloaded to a temp file (the old exe was locked), swap it into place.
+if ($usingTemp) {
+  Remove-Item $Target -Force -ErrorAction SilentlyContinue
+  try {
+    Move-Item $tempTarget $Target -Force
+  } catch {
+    Write-Host ""
+    Write-Host "  Could not replace $Binary.exe: $_" -ForegroundColor Red
+    Write-Host "  Close any attached session and re-run the installer." -ForegroundColor Yellow
+    Remove-Item $tempTarget -ErrorAction SilentlyContinue
+    return
+  }
+}
+# Clean up a partial / zero-byte download so a later retry starts fresh.
+if (-not (Test-Path $Target) -or (Get-Item $Target).Length -eq 0) {
+  Remove-Item $Target -ErrorAction SilentlyContinue
+  Write-Host "  Download did not complete; nothing was installed." -ForegroundColor Red
+  return
+}
+
+# --- add to user PATH if missing (silent on success) -----------------------
+$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+if ($userPath -notlike "*$InstallDir*") {
+  $newPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
+  [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+}
+
+# --- launch the configurer --------------------------------------------------
+Write-Host ""
+try {
+  & $Target configure
+} catch {
+  Write-Host "  configure did not complete: $_" -ForegroundColor Red
+  Write-Host "  Re-run '$Binary configure' later to finish setup." -ForegroundColor Yellow
+}

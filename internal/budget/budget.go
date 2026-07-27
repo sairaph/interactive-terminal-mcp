@@ -8,20 +8,17 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/tiktoken-go/tokenizer"
+	"github.com/tiktoken-go/tokenizer/codec"
 )
 
 var (
 	codecOnce sync.Once
-	codec     tokenizer.Codec
-	codecErr  error
+	encoder   *codec.Codec
 )
 
-func encoding() (tokenizer.Codec, error) {
-	codecOnce.Do(func() {
-		codec, codecErr = tokenizer.Get(tokenizer.O200kBase)
-	})
-	return codec, codecErr
+func encoding() (*codec.Codec, error) {
+	codecOnce.Do(func() { encoder = codec.NewO200kBase() })
+	return encoder, nil
 }
 
 // Count returns the exact number of o200k_base tokens in text.
