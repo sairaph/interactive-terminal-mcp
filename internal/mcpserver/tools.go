@@ -36,7 +36,8 @@ func (s *Service) active(ctx context.Context, _ *mcp.CallToolRequest, input acti
 // --- it_list ----------------------------------------------------------------
 
 type listInput struct {
-	Page int `json:"page,omitempty"`
+	Page    int  `json:"page,omitempty"`
+	Verbose bool `json:"verbose,omitempty"`
 }
 
 func (s *Service) list(ctx context.Context, _ *mcp.CallToolRequest, input listInput) (*mcp.CallToolResult, any, error) {
@@ -57,7 +58,7 @@ func (s *Service) list(ctx context.Context, _ *mcp.CallToolRequest, input listIn
 	if err := s.call(ctx, ipc.OpSessionList, nil, &result); err != nil {
 		return errorResult(err), nil, nil
 	}
-	front, body, err := renderList(result, page, s.settings.ListTokenBudget)
+	front, body, err := renderList(result, page, s.settings.ListTokenBudget, input.Verbose)
 	if err != nil {
 		return errorResult(err), nil, nil
 	}

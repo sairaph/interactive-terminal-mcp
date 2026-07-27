@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sairaph/interactive-terminal-mcp/internal/budget"
 	"github.com/sairaph/interactive-terminal-mcp/internal/config"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 )
@@ -167,8 +168,8 @@ func TestNoActiveSessionGuidance(t *testing.T) {
 		t.Errorf("body should offer to create one:\n%s", body)
 	}
 
-	// With sessions present but none active, the advice is different: select
-	// one rather than pile up another.
+	// With live sessions present but none active, the advice is different:
+	// select one rather than pile up another.
 	existing := ipc.ActiveResult{LiveSessions: 2, TotalSessions: 3}
 	body = text(t, successResult(noActiveFront(existing), noActiveBody(existing)))
 	if !strings.Contains(body, "it_list({})") {
@@ -176,6 +177,34 @@ func TestNoActiveSessionGuidance(t *testing.T) {
 	}
 	if !strings.Contains(body, `it_active({"session":"<id>"})`) {
 		t.Errorf("body should offer to select one:\n%s", body)
+	}
+
+	// When every session is dead, selecting one is useless advice: nothing can
+	// be run in it. Reading its output is the only thing left to do.
+	allDead := ipc.ActiveResult{LiveSessions: 0, TotalSessions: 11}
+	body = text(t, successResult(noActiveFront(allDead), noActiveBody(allDead)))
+	if strings.Contains(body, "it_active({") {
+		t.Errorf("selecting a dead session is not a useful next step:\n%s", body)
+	}
+	if !strings.Contains(body, "it_tail") || !strings.Contains(body, "it_new") {
+		t.Errorf("body should offer reading the output or starting fresh:\n%s", body)
+	}
+}
+
+// Two creates racing can leave the first reply's active flag stale. Telling
+// the caller a session "is active" when another already took over would send
+// the next call to the wrong terminal.
+func TestNewReportsWhenItLostTheActiveSlot(t *testing.T) {
+	info := sampleSession()
+	info.Active = false
+	screen := ipc.Screen{Session: info, Lines: []string{"$"}, Settled: true}
+	body := screenBody(screen, newGuidance(screen))
+
+	if strings.Contains(body, "is active.") {
+		t.Errorf("a session that lost the active slot must not claim it:\n%s", body)
+	}
+	if !strings.Contains(body, "another session is active now") {
+		t.Errorf("the caller should be told to name the session explicitly:\n%s", body)
 	}
 }
 
@@ -188,7 +217,7 @@ func TestListResultShapeAndPagination(t *testing.T) {
 		LastActivityAt:  time.Date(2026, 7, 27, 9, 5, 10, 0, time.UTC),
 		TranscriptLines: 96,
 	}}
-	front, body, err := renderList(ipc.ListResult{Active: "t-k3f9qa", Sessions: sessions}, 1, 2000)
+	front, body, err := renderList(ipc.ListResult{Active: "t-k3f9qa", Sessions: sessions}, 1, 2000, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +235,7 @@ func TestListResultShapeAndPagination(t *testing.T) {
 }
 
 func TestEmptyListSuggestsCreating(t *testing.T) {
-	front, body, err := renderList(ipc.ListResult{}, 1, 2000)
+	front, body, err := renderList(ipc.ListResult{}, 1, 2000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +254,7 @@ func TestListPaginatesUnderATightBudget(t *testing.T) {
 		info.ID = "t-00000" + string(rune('a'+index))
 		sessions = append(sessions, info)
 	}
-	front, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 300)
+	front, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 300, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,5 +579,63 @@ func TestEscalationNamesTheSignalAsked(t *testing.T) {
 	body := killBody(result)
 	if !strings.Contains(body, "did not exit after HUP") {
 		t.Errorf("the report should name HUP, not TERM:\n%s", body)
+	}
+}
+
+// The list is how a caller chooses a session, and paying two thousand tokens
+// to answer "which one" crowds out the work itself.
+func TestListIsCompactByDefault(t *testing.T) {
+	var sessions []ipc.SessionInfo
+	for index := range 11 {
+		info := sampleSession()
+		info.ID = "t-0000" + string(rune('a'+index))
+		sessions = append(sessions, info)
+	}
+
+	compactFront, compactBody, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 100_000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verboseFront, _, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 100_000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compactText := text(t, successResult(compactFront, compactBody))
+	verboseText := text(t, successResult(verboseFront, ""))
+
+	compactTokens, err := budget.Count(compactText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verboseTokens, err := budget.Count(verboseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Measured at roughly 55% of verbose for eleven sessions. The bound is
+	// loose enough not to break on wording, tight enough to catch a field
+	// creeping back into the default.
+	if compactTokens*4 > verboseTokens*3 {
+		t.Errorf("compact should be materially cheaper: %d vs %d tokens", compactTokens, verboseTokens)
+	}
+	t.Logf("eleven sessions: compact %d tokens, verbose %d", compactTokens, verboseTokens)
+
+	// What survives must still be enough to pick a session and know whether
+	// its log is worth reading.
+	for _, want := range []string{"id:", "running:", "command:", "transcript_lines:"} {
+		if !strings.Contains(compactText, want) {
+			t.Errorf("compact list dropped %q, which a caller needs:\n%s", want, compactText)
+		}
+	}
+	for _, gone := range []string{"cwd:", "log_path:", "created_at:"} {
+		if strings.Contains(compactText, gone) {
+			t.Errorf("compact list still carries %q", gone)
+		}
+	}
+	if !strings.Contains(compactBody, `"verbose":true`) {
+		t.Errorf("the caller should be told how to get the rest:\n%s", compactBody)
+	}
+	if !strings.Contains(verboseText, "cwd:") {
+		t.Errorf("verbose should restore the detail:\n%s", verboseText)
 	}
 }

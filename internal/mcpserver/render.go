@@ -154,6 +154,13 @@ func newGuidance(screen ipc.Screen) []string {
 			exitPhrase(info), call("it_tail", map[string]any{"session": info.ID}))}
 	}
 	opening := fmt.Sprintf("Session %s is active", label(info))
+	if !info.Active {
+		// Another session was created between this one starting and this reply
+		// being written, so the flag above is already stale. Saying "is active"
+		// would send the next call to the wrong terminal.
+		opening = fmt.Sprintf("Session %s was created, but another session is active now, "+
+			"so name it explicitly in later calls", label(info))
+	}
 	if info.Shell != "" {
 		// Which interpreter is running decides the syntax of every command the
 		// caller is about to write, and on Windows it is not guessable.
@@ -241,9 +248,20 @@ func noActiveBody(result ipc.ActiveResult) string {
 			"No session is currently active, and none exist. Create one with `%s`.",
 			call("it_new", map[string]any{}))
 	}
+	if result.LiveSessions == 0 {
+		// Pointing at a dead session is not a useful next step; its output is
+		// still readable, but nothing can be run in it.
+		return fmt.Sprintf(
+			"No session is active, and none of the %d %s still running. Their output is readable with `%s`. "+
+				"To run anything, create a session with `%s`.",
+			result.TotalSessions, plural(result.TotalSessions, "session is", "sessions are"),
+			call("it_tail", map[string]any{"session": "<id>"}),
+			call("it_new", map[string]any{}))
+	}
 	return fmt.Sprintf(
-		"No session is currently active, but %d %s. List them with `%s`, then select one with `%s` or create another with `%s`.",
-		result.TotalSessions, plural(result.TotalSessions, "session exists", "sessions exist"),
+		"No session is currently active, but %d of %d %s still running. List them with `%s`, then select one with `%s` or create another with `%s`.",
+		result.LiveSessions, result.TotalSessions,
+		plural(result.LiveSessions, "is", "are"),
 		call("it_list", map[string]any{}),
 		call("it_active", map[string]any{"session": "<id>"}),
 		call("it_new", map[string]any{}))
@@ -256,11 +274,13 @@ type listMetadata struct {
 	Total      int       `yaml:"total"`
 	TotalPages int       `yaml:"total_pages"`
 	Active     string    `yaml:"active,omitempty"`
+	Verbose    bool      `yaml:"verbose,omitempty"`
 	Sessions   []listRow `yaml:"sessions,omitempty"`
 }
 
-// listRow is deliberately flat and short. A model scanning a list needs to
-// pick a session, not reconstruct its full history.
+// listRow is what a caller needs to pick a session. Everything beyond that is
+// available from it_read or the verbose form, because a dozen fields times a
+// dozen sessions is a couple of thousand tokens spent to answer "which one".
 type listRow struct {
 	ID              string `yaml:"id"`
 	Name            string `yaml:"name,omitempty"`
@@ -272,7 +292,7 @@ type listRow struct {
 	Command         string `yaml:"command,omitempty"`
 	Shell           string `yaml:"shell,omitempty"`
 	Cwd             string `yaml:"cwd,omitempty"`
-	Size            []int  `yaml:"size,flow"`
+	Size            []int  `yaml:"size,flow,omitempty"`
 	AltScreen       bool   `yaml:"alt_screen,omitempty"`
 	Title           string `yaml:"title,omitempty"`
 	CreatedAt       string `yaml:"created_at,omitempty"`
@@ -281,7 +301,19 @@ type listRow struct {
 	LogPath         string `yaml:"log_path,omitempty"`
 }
 
-func renderList(result ipc.ListResult, page, tokenBudget int) (any, string, error) {
+// compact drops the fields that answer questions a caller has not asked yet.
+// What survives is enough to choose a session and to know whether its log is
+// worth reading.
+func (r listRow) compact() listRow {
+	return listRow{
+		ID: r.ID, Name: r.Name, Active: r.Active, Running: r.Running,
+		ExitCode: r.ExitCode, KilledBy: r.KilledBy,
+		Command: r.Command, LastActivityAt: r.LastActivityAt,
+		TranscriptLines: r.TranscriptLines,
+	}
+}
+
+func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any, string, error) {
 	rows := make([]listRow, 0, len(result.Sessions))
 	for _, info := range result.Sessions {
 		rows = append(rows, listRow{
@@ -293,6 +325,12 @@ func renderList(result ipc.ListResult, page, tokenBudget int) (any, string, erro
 			CreatedAt: formatTime(info.CreatedAt), LastActivityAt: formatTime(info.LastActivityAt),
 			TranscriptLines: info.TranscriptLines, LogPath: info.LogPath,
 		})
+	}
+
+	if !verbose {
+		for index := range rows {
+			rows[index] = rows[index].compact()
+		}
 	}
 
 	window, totalPages, err := budget.Paginate(rows, page, tokenBudget, func(records []listRow) (string, error) {
@@ -307,7 +345,7 @@ func renderList(result ipc.ListResult, page, tokenBudget int) (any, string, erro
 
 	front := listMetadata{
 		Page: page, Total: len(rows), TotalPages: totalPages,
-		Active: result.Active, Sessions: window,
+		Active: result.Active, Verbose: verbose, Sessions: window,
 	}
 	return front, listBody(front, window), nil
 }
@@ -350,6 +388,11 @@ func listBody(front listMetadata, window []listRow) string {
 
 	if front.Page < front.TotalPages {
 		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("it_list", map[string]any{"page": front.Page + 1})))
+	}
+	if !front.Verbose {
+		parts = append(parts, fmt.Sprintf(
+			"Working directory, size, and log path are omitted; add `%s` for them.",
+			call("it_list", map[string]any{"verbose": true})))
 	}
 	return strings.Join(parts, "\n\n")
 }

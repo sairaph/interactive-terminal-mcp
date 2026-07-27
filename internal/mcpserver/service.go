@@ -247,7 +247,14 @@ func activeSchema() map[string]any {
 }
 
 func listSchema() map[string]any {
-	return objectSchema(map[string]any{"page": pageProperty()})
+	return objectSchema(map[string]any{
+		"page": pageProperty(),
+		"verbose": map[string]any{
+			"type": "boolean", "default": false,
+			"description": "Include working directory, terminal size, timestamps, and log path. " +
+				"Off by default because the short form is enough to choose a session and costs a fraction of the tokens.",
+		},
+	})
 }
 
 func newSchema(settings config.Config) map[string]any {
