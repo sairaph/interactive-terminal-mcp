@@ -219,6 +219,18 @@ func pageProperty() map[string]any {
 	}
 }
 
+// waitForProperty is the only completion signal that does not rely on guessing
+// from output timing, so it is offered wherever a call can wait.
+func waitForProperty() map[string]any {
+	return map[string]any{
+		"type": "string",
+		"description": "End the wait as soon as this text appears on the screen. " +
+			"Use it when a command prints nothing while it works, or prints in bursts: waiting for something you " +
+			"know will appear, such as the shell prompt or a word the command finishes with, is exact, " +
+			"while quiet output only ever means quiet output. The reply reports matched.",
+	}
+}
+
 func waitProperty(settings config.Config, defaultSeconds int, purpose string) map[string]any {
 	return map[string]any{
 		"type": "number", "minimum": 0, "maximum": settings.MaximumWaitSeconds,
@@ -283,10 +295,11 @@ func newSchema(settings config.Config) map[string]any {
 			"additionalProperties": map[string]any{"type": "string"},
 			"description":          "Extra environment variables, merged over the inherited environment",
 		},
-		"shell": shellProperty(),
-		"cols":  colsProperty(settings),
-		"rows":  rowsProperty(settings),
-		"wait":  waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
+		"shell":    shellProperty(),
+		"cols":     colsProperty(settings),
+		"rows":     rowsProperty(settings),
+		"wait":     waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
+		"wait_for": waitForProperty(),
 	})
 }
 
@@ -336,7 +349,8 @@ func readSchema(settings config.Config) map[string]any {
 			"type": "integer", "minimum": 5, "maximum": 1000,
 			"description": "Resize the terminal to this height before capturing.",
 		},
-		"wait": waitProperty(settings, 0, "Useful for a command that prints as it works."),
+		"wait":     waitProperty(settings, 0, "Useful for a command that prints as it works."),
+		"wait_for": waitForProperty(),
 	})
 }
 
@@ -356,7 +370,8 @@ func sendSchema(settings config.Config) map[string]any {
 			"type": "boolean", "default": true,
 			"description": "Append Enter after text, submitting it. Set false to fill in a prompt without submitting.",
 		},
-		"wait": waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a command you expect to take a while."),
+		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a command you expect to take a while."),
+		"wait_for": waitForProperty(),
 	})
 }
 

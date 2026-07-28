@@ -88,6 +88,8 @@ type screenMetadata struct {
 	Command           string `yaml:"command,omitempty"`
 	Cwd               string `yaml:"cwd,omitempty"`
 	Settled           bool   `yaml:"settled"`
+	Matched           *bool  `yaml:"matched,omitempty"`
+	WaitedFor         string `yaml:"waited_for,omitempty"`
 	WaitedMS          int64  `yaml:"waited_ms"`
 	LastActivityAt    string `yaml:"last_activity_at,omitempty"`
 	BlankLinesTrimmed int    `yaml:"blank_lines_trimmed,omitempty"`
@@ -97,7 +99,7 @@ type screenMetadata struct {
 
 func screenFront(screen ipc.Screen) screenMetadata {
 	info := screen.Session
-	return screenMetadata{
+	front := screenMetadata{
 		Session: info.ID, Name: info.Name, Active: info.Active,
 		Running: info.Running, ExitCode: info.ExitCode, PID: info.PID,
 		Size:      []int{info.Cols, info.Rows},
@@ -105,11 +107,17 @@ func screenFront(screen ipc.Screen) screenMetadata {
 		AltScreen: info.AltScreen, Title: info.Title,
 		Shell: info.Shell, Command: commandText(info), Cwd: info.Cwd,
 		Settled: screen.Settled, WaitedMS: screen.WaitedMS,
+		WaitedFor:         screen.WaitedFor,
 		LastActivityAt:    formatTime(info.LastActivityAt),
 		BlankLinesTrimmed: screen.BlankLinesTrimmed,
 		TranscriptLines:   info.TranscriptLines,
 		LogPath:           info.LogPath,
 	}
+	if screen.WaitedFor != "" {
+		matched := screen.Matched
+		front.Matched = &matched
+	}
+	return front
 }
 
 // screenBody renders the screen followed by guidance.
@@ -121,7 +129,15 @@ func screenBody(screen ipc.Screen, guidance []string) string {
 
 	// An unsettled screen is the single most important thing to say: the
 	// command may still be running and the output may be incomplete.
-	if !screen.Settled && screen.Session.Running {
+	switch {
+	case screen.WaitedFor != "" && !screen.Matched && screen.Session.Running:
+		parts = append(parts, fmt.Sprintf(
+			"%q did not appear within %s, so the command is very likely still going. "+
+				"Wait for it again with `%s`.",
+			screen.WaitedFor, formatDuration(screen.WaitedMS),
+			call("it_read", map[string]any{
+				"session": screen.Session.ID, "wait_for": screen.WaitedFor, "wait": 60})))
+	case !screen.Settled && screen.Session.Running:
 		parts = append(parts, fmt.Sprintf(
 			"Output was still arriving when the %s wait ended, so this screen may be incomplete. "+
 				"Check again with `%s`.",

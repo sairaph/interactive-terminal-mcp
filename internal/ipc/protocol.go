@@ -114,11 +114,16 @@ type Screen struct {
 	Cursor            [2]int      `json:"cursor"`
 	BlankLinesTrimmed int         `json:"blank_lines_trimmed"`
 	Settled           bool        `json:"settled"`
+	Matched           bool        `json:"matched,omitempty"`
+	WaitedFor         string      `json:"waited_for,omitempty"`
 	WaitedMS          int64       `json:"waited_ms"`
 }
 
 // NewArgs creates a session.
 type NewArgs struct {
+	// WaitFor ends the wait as soon as this text appears on the screen.
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Name        string            `json:"name,omitempty"`
 	CommandLine string            `json:"command_line,omitempty"`
 	Argv        []string          `json:"argv,omitempty"`
@@ -132,6 +137,9 @@ type NewArgs struct {
 
 // ReadArgs snapshots a session, optionally resizing first.
 type ReadArgs struct {
+	// WaitFor ends the wait as soon as this text appears on the screen.
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Session string `json:"session,omitempty"`
 	Cols    int    `json:"cols,omitempty"`
 	Rows    int    `json:"rows,omitempty"`
@@ -140,6 +148,9 @@ type ReadArgs struct {
 
 // SendArgs writes to a session.
 type SendArgs struct {
+	// WaitFor ends the wait as soon as this text appears on the screen.
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Session string `json:"session,omitempty"`
 	Text    string `json:"text,omitempty"`
 	HasText bool   `json:"has_text"`

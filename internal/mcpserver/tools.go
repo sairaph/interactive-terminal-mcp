@@ -68,6 +68,8 @@ func (s *Service) list(ctx context.Context, _ *mcp.CallToolRequest, input listIn
 // --- it_new -----------------------------------------------------------------
 
 type newInput struct {
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Name    string            `json:"name,omitempty"`
 	Command json.RawMessage   `json:"command,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
@@ -91,7 +93,7 @@ func (s *Service) new(ctx context.Context, _ *mcp.CallToolRequest, input newInpu
 	args := ipc.NewArgs{
 		Name: strings.TrimSpace(input.Name), CommandLine: commandLine, Argv: argv,
 		Cwd: input.Cwd, Env: input.Env, Shell: input.Shell,
-		Cols: input.Cols, Rows: input.Rows, WaitMS: wait,
+		Cols: input.Cols, Rows: input.Rows, WaitMS: wait, WaitFor: input.WaitFor,
 	}
 	var screen ipc.Screen
 	if err := s.call(ctx, ipc.OpSessionNew, args, &screen); err != nil {
@@ -136,6 +138,8 @@ func decodeCommand(raw json.RawMessage) (commandLine string, argv []string, err 
 // --- it_read ----------------------------------------------------------------
 
 type readInput struct {
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Session string   `json:"session,omitempty"`
 	Cols    int      `json:"cols,omitempty"`
 	Rows    int      `json:"rows,omitempty"`
@@ -149,7 +153,7 @@ func (s *Service) read(ctx context.Context, _ *mcp.CallToolRequest, input readIn
 	}
 	args := ipc.ReadArgs{
 		Session: strings.TrimSpace(input.Session),
-		Cols:    input.Cols, Rows: input.Rows, WaitMS: wait,
+		Cols:    input.Cols, Rows: input.Rows, WaitMS: wait, WaitFor: input.WaitFor,
 	}
 	var screen ipc.Screen
 	if err := s.call(ctx, ipc.OpSessionRead, args, &screen); err != nil {
@@ -161,6 +165,8 @@ func (s *Service) read(ctx context.Context, _ *mcp.CallToolRequest, input readIn
 // --- it_send ----------------------------------------------------------------
 
 type sendInput struct {
+	WaitFor string `json:"wait_for,omitempty"`
+
 	Session string   `json:"session,omitempty"`
 	Text    *string  `json:"text,omitempty"`
 	Keys    *string  `json:"keys,omitempty"`
@@ -185,6 +191,7 @@ func (s *Service) send(ctx context.Context, _ *mcp.CallToolRequest, input sendIn
 		Session: strings.TrimSpace(input.Session),
 		Enter:   true,
 		WaitMS:  wait,
+		WaitFor: input.WaitFor,
 	}
 	if input.Text != nil {
 		args.Text, args.HasText = *input.Text, true

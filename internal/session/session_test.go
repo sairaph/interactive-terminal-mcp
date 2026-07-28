@@ -193,11 +193,18 @@ func TestAlternateScreenOutputIsNotInTranscript(t *testing.T) {
 	if err := session.Write([]byte("printf '\\033[?1049h'; printf 'ALTSCREEN-ONLY\\r\\n'\n")); err != nil {
 		t.Fatal(err)
 	}
-	waitForScreen(t, session, "ALTSCREEN-ONLY", 5*time.Second)
-
-	if !session.Snapshot().AltScreen {
-		t.Fatal("snapshot should report the alternate screen is active")
+	// Waiting for the marker text is not enough: the shell echoes the command
+	// being typed, and that echo contains the marker, so a slow machine matches
+	// it before the escape sequence has run. The mode itself is the signal.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !session.Snapshot().AltScreen {
+		time.Sleep(20 * time.Millisecond)
 	}
+	if !session.Snapshot().AltScreen {
+		t.Fatalf("snapshot should report the alternate screen is active; screen:\n%s",
+			session.Snapshot().Text())
+	}
+	waitForScreen(t, session, "ALTSCREEN-ONLY", 5*time.Second)
 	session.Flush()
 
 	slice, err := Tail(session.TranscriptPath(), 500)
@@ -606,4 +613,67 @@ func TestInterruptLeavesOtherSessionsAlone(t *testing.T) {
 	if !first.Running() {
 		t.Error("an interrupt should leave its own session usable")
 	}
+}
+
+// Waiting for text is the only completion signal that does not depend on
+// guessing from output timing, so it has to be exact about what counts.
+func TestWaitUntilWaitsForNewOutputNotTheEcho(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 5*time.Second)
+
+	// The command contains the word being waited for. A terminal echoes what is
+	// typed, so a naive search matches that echo and reports a command finished
+	// before it has begun.
+	if err := session.Write([]byte("sleep 3; echo ARRIVED\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond, "ARRIVED")
+	if !result.Matched {
+		t.Fatalf("the text should have been matched, got %+v", result)
+	}
+	if result.Waited < 2*time.Second {
+		t.Errorf("matched after %v, which is the echo rather than the output", result.Waited)
+	}
+}
+
+// A silent command is exactly the case output-watching cannot handle.
+func TestWaitUntilHandlesASilentCommand(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 5*time.Second)
+
+	// Nothing is printed for two seconds, so settling on quiet would return
+	// almost immediately and call it finished.
+	quick := session.WaitSettled(context.Background(), 10*time.Second, 250*time.Millisecond)
+	if !quick.Settled {
+		t.Skip("the shell was not idle; the comparison would not be meaningful")
+	}
+
+	if err := session.Write([]byte("sleep 2; echo DONE-NOW\n")); err != nil {
+		t.Fatal(err)
+	}
+	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond, "DONE-NOW")
+	if !result.Matched || result.Waited < time.Second {
+		t.Errorf("a silent command should be waited out, got %+v", result)
+	}
+}
+
+// Text that never arrives must be reported as not arriving.
+func TestWaitUntilReportsAMiss(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 30"}})
+
+	result := session.WaitUntil(context.Background(), 1500*time.Millisecond, 250*time.Millisecond, "NEVER")
+	if result.Matched {
+		t.Error("text that never appeared must not be reported as matched")
+	}
+	if result.Settled {
+		t.Error("a wait that timed out has not settled")
+	}
+	_ = session.Kill("KILL", "test")
 }

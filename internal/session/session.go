@@ -559,6 +559,12 @@ func (s *Session) Resize(cols, rows int) error {
 
 // SettleResult describes how a wait ended.
 type SettleResult struct {
+	// Matched is true when a wait_for string appeared on the screen, which is
+	// the only completion signal that does not depend on guessing from output
+	// timing. A silent command is indistinguishable from a finished one
+	// otherwise, so this is how a caller waits for one.
+	Matched bool
+
 	// Settled is true when output stopped changing before the budget expired.
 	// False tells the agent the screen may still be in flux.
 	Settled bool
@@ -629,6 +635,73 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 				continue
 			}
 			return SettleResult{Settled: true, Waited: time.Since(start), Exited: !s.Running()}
+		}
+	}
+}
+
+// WaitUntil blocks until text appears on the screen, the budget expires, or
+// the session exits.
+//
+// This exists because quiet is a poor proxy for finished. A command that
+// prints nothing looks complete the instant it starts, and one that prints
+// periodically looks complete between lines. Waiting for something the caller
+// knows will appear -- a prompt, a word the command ends with -- is exact.
+//
+// What is counted is a new occurrence, not any occurrence. The terminal echoes
+// the command as it is typed, so waiting for a word that command contains
+// would otherwise match the echo instantly and report a command finished
+// before it had started.
+func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, text string) SettleResult {
+	if text == "" {
+		return s.WaitSettled(ctx, budget, quiet)
+	}
+	start := time.Now()
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+
+	// Let the echo of whatever was just typed reach the screen before counting,
+	// so it is part of the baseline rather than mistaken for the result.
+	const echoGrace = 250 * time.Millisecond
+	select {
+	case <-ctx.Done():
+		return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+	case <-time.After(echoGrace):
+	case <-s.processDone:
+	}
+	baseline := strings.Count(s.term.Snapshot().Text(), text)
+
+	deadline := time.After(budget)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	matched := func() bool {
+		current := strings.Count(s.term.Snapshot().Text(), text)
+		// A greater count means it appeared again. A smaller one means the
+		// screen scrolled past the baseline, so any occurrence now is new.
+		return current > baseline || (current > 0 && current < baseline)
+	}
+
+	for {
+		if matched() {
+			return SettleResult{Settled: true, Matched: true,
+				Waited: time.Since(start), Exited: !s.Running()}
+		}
+		select {
+		case <-ctx.Done():
+			return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+		case <-deadline:
+			return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+		case <-s.processDone:
+			// The session ended. Give the final screen a moment to land, then
+			// report whether the text ever arrived.
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-ctx.Done():
+			}
+			return SettleResult{Settled: true, Matched: matched(),
+				Waited: time.Since(start), Exited: true}
+		case <-ticker.C:
 		}
 	}
 }

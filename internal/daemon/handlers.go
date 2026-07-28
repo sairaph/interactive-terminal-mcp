@@ -92,8 +92,10 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	d.registry.add(live, directory)
 	d.touch()
 
-	settled := live.WaitSettled(ctx, time.Duration(args.WaitMS)*time.Millisecond, settings.SettleQuiet)
-	return d.screen(live, settled), nil
+	settled := d.wait(ctx, live, args.WaitMS, args.WaitFor, settings)
+	screen := d.screen(live, settled)
+	screen.WaitedFor = args.WaitFor
+	return screen, nil
 }
 
 func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen, error) {
@@ -128,8 +130,10 @@ func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen,
 		}
 	}
 
-	settled := item.live.WaitSettled(ctx, time.Duration(args.WaitMS)*time.Millisecond, settings.SettleQuiet)
-	return d.screen(item.live, settled), nil
+	settled := d.wait(ctx, item.live, args.WaitMS, args.WaitFor, settings)
+	screen := d.screen(item.live, settled)
+	screen.WaitedFor = args.WaitFor
+	return screen, nil
 }
 
 func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen, error) {
@@ -169,8 +173,20 @@ func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen,
 		}
 	}
 
-	settled := live.WaitSettled(ctx, time.Duration(args.WaitMS)*time.Millisecond, settings.SettleQuiet)
-	return d.screen(live, settled), nil
+	settled := d.wait(ctx, live, args.WaitMS, args.WaitFor, settings)
+	screen := d.screen(live, settled)
+	screen.WaitedFor = args.WaitFor
+	return screen, nil
+}
+
+// wait blocks for the caller, using the exact signal when one was given and
+// falling back to watching output when it was not.
+func (d *Daemon) wait(ctx context.Context, live *session.Session, waitMS int64, waitFor string, settings config.Config) session.SettleResult {
+	budget := time.Duration(waitMS) * time.Millisecond
+	if waitFor != "" {
+		return live.WaitUntil(ctx, budget, settings.SettleQuiet, waitFor)
+	}
+	return live.WaitSettled(ctx, budget, settings.SettleQuiet)
 }
 
 // writeText types literal text, appending a carriage return when asked.
@@ -583,6 +599,7 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 		Cursor:            snapshot.Cursor,
 		BlankLinesTrimmed: snapshot.BlankLinesTrimmed,
 		Settled:           settled.Settled,
+		Matched:           settled.Matched,
 		WaitedMS:          settled.Waited.Milliseconds(),
 	}
 }
