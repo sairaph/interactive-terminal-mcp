@@ -67,6 +67,29 @@ chmod +x "$TEMP"
 mv -f "$TEMP" "$TARGET"
 trap - EXIT HUP INT TERM
 
+# Stop the daemon again, now that the new binary is the one on disk.
+#
+# The stop before the download releases the old executable, but it cannot be
+# the last word: the download takes seconds, and any tool call an AI client
+# makes in that window starts a daemon from the binary that is still there --
+# the old one. It would then keep serving old code long after this script
+# reported success, which reads as an upgrade that silently did nothing.
+#
+# Stopping here closes that window. Whatever is running is asked to stop, and
+# the next tool call starts the version just installed.
+stopped=$("$TARGET" daemon --stop 2>/dev/null) || stopped=""
+case "$stopped" in
+  *"No session daemon"*|"") ;;
+  *)
+    printf '\n  %s\n' "$stopped"
+    # The daemon carries session behaviour and restarts on the next tool call,
+    # so that part is already current. Tool descriptions come from the MCP
+    # server process the AI client spawned, which is still the old binary and
+    # will be until the client restarts it.
+    printf '  Restart your AI client so it picks up the new tool descriptions.\n'
+    ;;
+esac
+
 # --- add to PATH if missing (silent on success) ----------------------------
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) on_path=1 ;;

@@ -126,6 +126,29 @@ if (-not (Test-Path $Target) -or (Get-Item $Target).Length -eq 0) {
   return
 }
 
+# Stop the daemon again, now that the new binary is the one on disk.
+#
+# The stop before the download releases the locked executable, but it cannot be
+# the last word: the download takes seconds, and any tool call an AI client
+# makes in that window starts a daemon from the binary that is still there --
+# the old one. It would then keep serving old code long after this script
+# reported success, which reads as an upgrade that silently did nothing.
+#
+# Stopping here closes that window. Whatever is running is asked to stop, and
+# the next tool call starts the version just installed.
+try {
+  $stopped = (& $Target daemon --stop 2>$null | Out-String).Trim()
+  if ($stopped -and $stopped -notmatch 'No session daemon') {
+    Write-Host ""
+    Write-Host "  $stopped"
+    # The daemon carries session behaviour and restarts on the next tool call,
+    # so that part is already current. Tool descriptions come from the MCP
+    # server process the AI client spawned, which is still the old binary and
+    # will be until the client restarts it.
+    Write-Host "  Restart your AI client so it picks up the new tool descriptions." -ForegroundColor Yellow
+  }
+} catch {}
+
 # --- add to user PATH if missing -------------------------------------------
 # SetEnvironmentVariable updates the stored user PATH, which only new processes
 # read. This shell keeps the PATH it started with, so the command is not found
