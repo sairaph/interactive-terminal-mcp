@@ -43,6 +43,10 @@ type Options struct {
 	// ("powershell", "bash") or full path. Empty means the machine default.
 	Shell string
 
+	// Integrate starts the shell with an integration script so it reports its
+	// own command boundaries and exit codes.
+	Integrate bool
+
 	Directory          string
 	ScrollbackLines    int
 	RawLogMaxBytes     int64
@@ -106,6 +110,7 @@ func New(options Options) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	argv = applyIntegration(argv, shell, usedShell, options)
 	cwd := options.Cwd
 	if cwd == "" {
 		cwd, _ = os.Getwd()
@@ -464,8 +469,23 @@ func (s *Session) CommandBusy() (busy bool, known bool) {
 	if !s.Running() {
 		return false, true
 	}
+	// A shell that reports its own command boundaries is the authority, and it
+	// is right where the platform checks are weakest: it sees work the shell
+	// does inside itself, and it works the same on Windows, which has no
+	// foreground process group to read at all.
+	// MarksExecution matters: a shell that marks only prompts and exit codes
+	// would report every command as finished the moment it started, which is
+	// the false idle this whole field exists to avoid.
+	if state := s.term.Commands(); state.Integrated && state.MarksExecution {
+		return state.Running, true
+	}
 	return s.foregroundBusy()
 }
+
+// Commands reports what the shell has said about its own command boundaries.
+// Integrated is false when it has said nothing, which is the usual case until
+// shell integration is set up.
+func (s *Session) Commands() vterm.CommandState { return s.term.Commands() }
 
 // OutputBytes reports how many bytes the child has written since it started.
 // Zero means it has produced nothing at all, which is different from having

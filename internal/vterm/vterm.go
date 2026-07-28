@@ -30,6 +30,40 @@ type Snapshot struct {
 // Text joins the snapshot lines for rendering.
 func (s Snapshot) Text() string { return strings.Join(s.Lines, "\n") }
 
+// CommandState is what a shell has reported about its own command boundaries
+// through OSC 133, the shell-integration protocol that iTerm2, WezTerm,
+// Windows Terminal and VS Code all speak.
+//
+// It exists because everything else this project uses to answer "has the
+// command finished" is inference. Quiet output is not completion, and the
+// foreground process group is unavailable on Windows and blind to work a shell
+// does inside itself. A shell that emits these marks answers the question
+// directly, and gives an exit code with it.
+type CommandState struct {
+	// Integrated is true once any mark has arrived, which is how a caller
+	// knows these answers are available for this session at all. Nothing is
+	// claimed from them until it is true.
+	Integrated bool
+	// Running is true between the start of a command's output and its
+	// completion mark.
+	Running bool
+	// MarksExecution is true once a command-start mark has been seen. Not
+	// every shell can emit one: PowerShell has no hook that fires between
+	// reading a command line and running it, so it marks prompts and exit
+	// codes only. Running means nothing for such a shell -- it would read as
+	// permanently idle -- so callers must check this before believing it.
+	MarksExecution bool
+	// Completed counts commands that have finished. A caller compares it
+	// against a value taken earlier to tell a new completion from an old one,
+	// which is what makes it usable as a wait signal.
+	Completed uint64
+	// ExitCode is the status of the last completed command. HasExit is false
+	// when the shell reported completion without one, which happens for an
+	// empty command line or an interrupt.
+	ExitCode int
+	HasExit  bool
+}
+
 // Modes carries the input-affecting terminal modes that key encoding depends
 // on. Reading them at send time is what makes arrow keys work correctly inside
 // programs like vim and less rather than only at a shell prompt.
@@ -75,6 +109,9 @@ type Terminal interface {
 	AltScreen() bool
 	// Title reports the last title set through OSC 0/2.
 	Title() string
+	// Commands reports what the shell has said about its own command
+	// boundaries through OSC 133, when it says anything at all.
+	Commands() CommandState
 	// ScrollbackLines reports how many lines are retained above the screen.
 	ScrollbackLines() int
 	// ScrollbackText returns up to n lines ending at offset lines above the

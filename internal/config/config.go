@@ -58,7 +58,14 @@ type Config struct {
 	DefaultRows        int `toml:"default_rows"`
 	DefaultWaitSeconds int `toml:"default_wait_seconds"`
 	SettleQuietMS      int `toml:"settle_quiet_ms"`
-	MaximumWaitSeconds int `toml:"maximum_wait_seconds"`
+
+	// ShellIntegration starts new shells with a script that makes them report
+	// where each command begins and ends, and how it ended. It is the only
+	// completion signal that is reported rather than guessed at, so it is on
+	// by default; turning it off costs exit codes and accurate busy reporting
+	// but changes nothing else.
+	ShellIntegration   *bool `toml:"shell_integration,omitempty"`
+	MaximumWaitSeconds int   `toml:"maximum_wait_seconds"`
 
 	LogRetention       string `toml:"log_retention"`
 	ScrollbackLines    int    `toml:"scrollback_lines"`
@@ -87,6 +94,17 @@ type Paths struct {
 }
 
 // Default returns the recommended configuration.
+// boolPointer exists because a bool setting that defaults to true cannot be
+// stored as a plain bool: an absent key and an explicit false would be
+// indistinguishable, and turning the feature off would silently not stick.
+func boolPointer(value bool) *bool { return &value }
+
+// IntegrateShells reports whether new shells should be started with the
+// integration script. An unset value means the default, which is on.
+func (c Config) IntegrateShells() bool {
+	return c.ShellIntegration == nil || *c.ShellIntegration
+}
+
 func Default() Config {
 	return Config{
 		Version:                   currentVersion,
@@ -96,6 +114,7 @@ func Default() Config {
 		DefaultRows:               48,
 		DefaultWaitSeconds:        5,
 		SettleQuietMS:             250,
+		ShellIntegration:          boolPointer(true),
 		MaximumWaitSeconds:        300,
 		LogRetention:              RetentionOnClose,
 		ScrollbackLines:           10_000,

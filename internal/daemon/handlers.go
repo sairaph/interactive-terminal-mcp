@@ -76,6 +76,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 		ID: id, Name: name,
 		CommandLine: args.CommandLine, Argv: args.Argv,
 		Cwd: args.Cwd, Env: args.Env, Cols: cols, Rows: rows, Shell: args.Shell,
+		Integrate:          settings.IntegrateShells(),
 		Directory:          directory,
 		ScrollbackLines:    settings.ScrollbackLines,
 		RawLogMaxBytes:     settings.RawLogMaxBytes,
@@ -555,6 +556,15 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 	// reported rather than inferred from output timing downstream.
 	busy, busyKnown := live.CommandBusy()
 
+	// A shell with integration reports how its last command ended. Nothing
+	// else in this project can produce an exit status for a command that ran
+	// inside a session rather than being the session.
+	var commandExit *int
+	if state := live.Commands(); state.Integrated && state.HasExit && !state.Running {
+		code := state.ExitCode
+		commandExit = &code
+	}
+
 	return ipc.Screen{
 		Session:           d.describeSession(item),
 		Lines:             snapshot.Lines,
@@ -567,6 +577,7 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 		BudgetMS:          settled.Budget.Milliseconds(),
 		Busy:              busy,
 		BusyKnown:         busyKnown,
+		CommandExit:       commandExit,
 	}
 }
 

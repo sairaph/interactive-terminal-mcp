@@ -815,3 +815,104 @@ func TestInterruptReachesACommandInsideANestedTerminal(t *testing.T) {
 		t.Error("interrupting a command inside the nested terminal ended the session")
 	}
 }
+
+// A shell that reports its own command boundaries is a better answer than
+// anything this project can infer, and it is the only source of an exit status
+// for a command that ran inside a session rather than being the session.
+func TestShellIntegrationAnswersWhetherACommandIsRunning(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 5*time.Second)
+
+	if session.Commands().Integrated {
+		t.Fatal("a plain shell reports nothing, so nothing should be claimed")
+	}
+
+	// Emit the marks a shell with integration would emit around one command.
+	if err := session.Write([]byte(
+		"printf '\\033]133;A\\a'; printf '\\033]133;C\\a'; printf '\\033]133;D;3\\a'\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if state := session.Commands(); state.Integrated && state.Completed > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	state := session.Commands()
+	if !state.Integrated {
+		t.Fatal("the marks should have been recognised")
+	}
+	if state.Running {
+		t.Error("the command reported completion, so nothing is running")
+	}
+	if !state.HasExit || state.ExitCode != 3 {
+		t.Errorf("the reported exit status should be 3, got %+v", state)
+	}
+
+	// And busy now comes from the shell rather than from the foreground group.
+	busy, known := session.CommandBusy()
+	if !known || busy {
+		t.Errorf("an integrated shell at a prompt is idle, got busy=%v known=%v", busy, known)
+	}
+}
+
+// The integration script is shipped rather than asked of the user, so the
+// injection has to actually work against a real shell: the marks are only
+// worth anything if they arrive without anyone configuring anything.
+func TestIntegratedShellReportsItsCommands(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is needed to exercise the integration script")
+	}
+	session := newTestSession(t, Options{Shell: "bash", Integrate: true})
+
+	// A shell only reports once it has drawn a prompt.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && !session.Commands().Integrated {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !session.Commands().Integrated {
+		t.Fatalf("the shell reported nothing; screen:\n%s", session.Snapshot().Text())
+	}
+
+	before := session.Commands().Completed
+	if err := session.Write([]byte("(exit 7)\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && session.Commands().Completed == before {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	state := session.Commands()
+	if state.Completed == before {
+		t.Fatalf("the command's completion was never reported: %+v", state)
+	}
+	if !state.HasExit || state.ExitCode != 7 {
+		t.Errorf("exit status should be 7, got %+v", state)
+	}
+	if !state.MarksExecution {
+		t.Error("bash marks command starts through PS0; that is what makes busy trustworthy")
+	}
+
+	// None of the marks may be visible: they are metadata, and an agent reading
+	// this screen must see exactly what a person would.
+	if text := session.Snapshot().Text(); strings.Contains(text, "133;") {
+		t.Errorf("mark text leaked onto the screen:\n%s", text)
+	}
+}
+
+// Integration must never be the reason a session fails to start. A shell it
+// cannot integrate, or a directory it cannot write to, has to leave the shell
+// exactly as it would have been.
+func TestIntegrationIsOptionalAndSilent(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "echo plain-start"}, Integrate: true})
+	waitForScreen(t, session, "plain-start", 10*time.Second)
+	if session.Commands().Integrated {
+		t.Error("a one-shot command has no prompts to mark")
+	}
+}

@@ -97,6 +97,10 @@ type screenMetadata struct {
 	// is still running in this terminal.
 	Busy *bool `yaml:"busy,omitempty"`
 
+	// CommandExit is the last command's exit status, present only for a shell
+	// that reports its own command boundaries.
+	CommandExit *int `yaml:"command_exit,omitempty"`
+
 	Matched           *bool  `yaml:"matched,omitempty"`
 	WaitedFor         string `yaml:"waited_for,omitempty"`
 	WaitedMS          int64  `yaml:"waited_ms"`
@@ -131,6 +135,7 @@ func screenFront(screen ipc.Screen) screenMetadata {
 	if busy, known := busyState(screen); known {
 		front.Busy = &busy
 	}
+	front.CommandExit = screen.CommandExit
 	if screen.WaitedFor != "" {
 		matched := screen.Matched
 		front.Matched = &matched

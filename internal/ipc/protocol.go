@@ -126,6 +126,9 @@ type Screen struct {
 	// what a shell does inside itself.
 	Busy      bool `json:"busy,omitempty"`
 	BusyKnown bool `json:"busy_known,omitempty"`
+	// CommandExit is the status of the last command the shell reported
+	// finishing, which only a shell with OSC 133 integration can tell us.
+	CommandExit *int `json:"command_exit,omitempty"`
 }
 
 // NewArgs creates a session.

@@ -2,6 +2,7 @@ package vterm
 
 import (
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,7 @@ type Charm struct {
 	altScreen bool
 	title     string
 	modes     Modes
+	commands  CommandState
 }
 
 // NewCharm builds an emulator of the given size.
@@ -82,6 +84,14 @@ func NewCharm(cols, rows, scrollbackLines int) *Charm {
 	// Modes, title, and alternate-screen state are only reachable through
 	// callbacks; the emulator exposes no getters for them. They fire during
 	// Write, which already holds the lock, so they must not re-lock.
+	// OSC 133 is the shell-integration protocol. The emulator has no opinion
+	// about it, so it is parsed here and kept as state rather than drawn.
+	// Registering it also stops the sequences reaching the screen as text.
+	adapter.term.RegisterOscHandler(oscShellIntegration, func(data []byte) bool {
+		adapter.handleShellIntegration(data)
+		return true
+	})
+
 	adapter.term.SetCallbacks(vt.Callbacks{
 		Title:     func(title string) { adapter.title = title },
 		AltScreen: func(active bool) { adapter.altScreen = active },
@@ -134,6 +144,59 @@ func (c *Charm) pumpReplies() {
 }
 
 // setMode records the input-affecting DEC modes. Callers hold the lock.
+// oscShellIntegration is the OSC number shells use to mark prompts, commands
+// and their exit codes.
+const oscShellIntegration = 133
+
+// handleShellIntegration records one OSC 133 mark.
+//
+// The payload arrives as the whole sequence body, so "133;D;1" reaches here
+// with the command number still attached. Only the kind letter and, for a
+// completion, the exit code are of interest; shells append their own extras
+// after those and different shells append different things, so anything
+// beyond what is understood is ignored rather than treated as malformed.
+//
+// This runs from inside Write, which already holds the lock, so it must not
+// lock again -- the same rule the mode and title callbacks follow.
+func (c *Charm) handleShellIntegration(data []byte) {
+	fields := strings.Split(string(data), ";")
+	if len(fields) < 2 || fields[1] == "" {
+		return
+	}
+	c.commands.Integrated = true
+
+	switch fields[1][0] {
+	case 'A', 'B':
+		// A prompt is being drawn, so whatever ran before it is over. Shells
+		// that emit D report completion there; this is the fallback for those
+		// that only mark prompts.
+		c.commands.Running = false
+	case 'C':
+		// Output is starting, which is the only unambiguous "a command is
+		// running now" a terminal ever gets.
+		c.commands.Running = true
+		c.commands.MarksExecution = true
+	case 'D':
+		if c.commands.Running {
+			c.commands.Completed++
+		}
+		c.commands.Running = false
+		c.commands.HasExit = false
+		if len(fields) > 2 && fields[2] != "" {
+			if code, err := strconv.Atoi(strings.TrimSpace(fields[2])); err == nil {
+				c.commands.ExitCode, c.commands.HasExit = code, true
+			}
+		}
+	}
+}
+
+// Commands reports the shell-integration state.
+func (c *Charm) Commands() CommandState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.commands
+}
+
 func (c *Charm) setMode(mode ansi.Mode, enabled bool) {
 	decMode, ok := mode.(ansi.DECMode)
 	if !ok {

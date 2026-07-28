@@ -231,7 +231,14 @@ returns as soon as output goes quiet, so `wait: 30` costs milliseconds for
 output still arriving, the result says `settled: false` and tells the agent to
 look again - it never quietly returns a half-drawn screen.
 
-Quiet output is the weakest of the three completion signals, because a command
+A `bash` session is started with a small shell-integration script, so the shell
+itself reports where each command begins and ends and with what status. That
+gives `command_exit`, an exit code for a command run *inside* a session, and
+makes `busy` a report rather than an inference. It sources your own config
+first and never replaces your prompt; if it fails the shell starts normally and
+the tools fall back. `shell_integration = false` turns it off.
+
+Without it, quiet output is the weakest of the three completion signals, because a command
 that prints nothing is quiet from the moment it starts. `busy` is stronger: it
 comes from the terminal's own foreground process group rather than from timing,
 so `busy: true` is proof a command is still running and `busy: false` is strong

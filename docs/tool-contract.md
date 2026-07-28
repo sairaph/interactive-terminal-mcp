@@ -232,6 +232,26 @@ always and occasionally the shell working inside itself, as a `while` loop
 does. Where neither can be established the field is absent and the reply claims
 nothing.
 
+Where a shell reports its own command boundaries, none of that guessing is
+needed. New sessions running `bash` are started with a small integration script
+that emits the OSC 133 sequences iTerm2, WezTerm, Windows Terminal and VS Code
+all speak, marking where each command begins and ends and with what status.
+Then `busy` comes from the shell rather than from the process table, and
+`command_exit` reports how the last command ended -- the only exit status
+available for a command that ran *inside* a session rather than being one.
+
+The script sources the user's own configuration first and adds to it, never
+replacing a prompt. If anything about it fails the shell starts exactly as it
+would have and the tools fall back to their own checks, so nothing depends on
+it working. Turn it off with `shell_integration = false`.
+
+Other shells report nothing yet. PowerShell has no hook between reading a
+command line and running it, so integration there has to go through the prompt
+function, and one that throws costs the user their prompt; it is left out until
+that is solid rather than shipped on the strength of documentation. Marks also
+do not survive `ssh` or `tmux`, because they come from the shell on the far
+side.
+
 `wait_for` is exact. The wait ends the moment the given text appears, and what
 counts as an appearance is defined rather than guessed:
 
