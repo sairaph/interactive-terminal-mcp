@@ -715,7 +715,10 @@ func TestWaitUntilMatchesTextAlreadyOnScreen(t *testing.T) {
 // waiting for what that produces.
 func TestWaitUntilIgnoresTheBaselineAfterInput(t *testing.T) {
 	session := newTestSession(t, Options{Argv: []string{"sh"}})
-	if err := session.Write([]byte("PS1='> '\necho REPEATED\n")); err != nil {
+	// Quoted so the echoed command line does not contain the marker: waiting
+	// for it then means the output has arrived, and the baseline is taken from
+	// a screen that has finished settling rather than one mid-print.
+	if err := session.Write([]byte("PS1='> '\necho REPEA''TED\n")); err != nil {
 		t.Fatal(err)
 	}
 	waitForScreen(t, session, "REPEATED", 5*time.Second)

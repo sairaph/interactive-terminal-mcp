@@ -145,10 +145,8 @@ func (s *Service) registerTools() {
 			"Use it to check on a command started earlier, or to see the current state of a full-screen program. " +
 			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
 			"prints as it works; settled: true only ever means output was quiet, which is what a command that " +
-			"prints nothing looks like from the moment it starts. Prefer busy, which reports whether a command " +
-			"still holds the terminal: busy: true is proof one is running, busy: false is strong evidence that " +
-			"none is, and the field is absent where neither can be established. wait_for is exact. " +
-			"For output that has already scrolled past, use it_tail.",
+			"prints nothing looks like from the moment it starts. Prefer busy. " + busyPhrase() +
+			" wait_for is exact. For output that has already scrolled past, use it_tail.",
 		InputSchema: readSchema(s.settings),
 	}, s.read)
 
@@ -312,6 +310,22 @@ func newSchema(settings config.Config) map[string]any {
 		"wait":     waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
 		"wait_for": waitForProperty(false),
 	})
+}
+
+// busyPhrase describes what the busy field can actually report here.
+//
+// The two platforms establish different things, and describing the stronger
+// one everywhere told callers on Windows to prefer a value they would never
+// see. What a field means is part of the contract, so it is written from what
+// the platform can prove rather than from what would read best.
+func busyPhrase() string {
+	if session.BusyReportsIdle() {
+		return "busy: true is proof a command is running, busy: false is strong evidence none is, " +
+			"and the field is absent where neither can be established."
+	}
+	return "busy: true is proof a command is running. It is absent otherwise, which is not evidence " +
+		"of the opposite: here it can only be established from a separate process holding the terminal, " +
+		"and a shell doing its own work has none."
 }
 
 // defaultShellPhrase names the interpreter a bare it_new will start, so a model
