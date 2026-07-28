@@ -90,13 +90,12 @@ func (e *entry) lastActivity() time.Time {
 	return e.metadata.LastActivityAt
 }
 
-// registry holds every session and the active-session pointer.
+// registry holds every session the daemon knows about.
 type registry struct {
 	mu       sync.RWMutex
 	paths    config.Paths
 	settings config.Config
 	entries  map[string]*entry
-	active   string
 }
 
 func newRegistry(paths config.Paths, settings config.Config) *registry {
@@ -184,7 +183,7 @@ func (r *registry) resolve(reference string) (*entry, error) {
 		return nil, &ipc.Error{
 			Code:    ipc.CodeInvalidInput,
 			Message: "a session id or name is required",
-			Hint:    "Call it_list() to see existing sessions.",
+			Hint:    "Every tool takes the session it acts on. Call it_list() to see what exists, or it_new() to start one.",
 		}
 	}
 	r.mu.RLock()
@@ -218,34 +217,9 @@ func (r *registry) resolve(reference string) (*entry, error) {
 	}
 }
 
-// resolveOrActive falls back to the active session when no reference is given.
-// it_kill deliberately never uses this: killing the wrong terminal is
-// destructive and should require naming the target.
-func (r *registry) resolveOrActive(reference string) (*entry, error) {
-	if strings.TrimSpace(reference) != "" {
-		return r.resolve(reference)
-	}
-	r.mu.RLock()
-	active := r.active
-	count := len(r.entries)
-	r.mu.RUnlock()
-	if active == "" {
-		hint := "Create one with it_new({})."
-		if count > 0 {
-			hint = `Select one with it_active({"session":"<id>"}), or create one with it_new({}).`
-		}
-		return nil, &ipc.Error{
-			Code:    ipc.CodeNoActiveSession,
-			Message: "no session is currently active",
-			Hint:    hint,
-		}
-	}
-	return r.resolve(active)
-}
-
 // requireLive resolves a session that must still be running.
 func (r *registry) requireLive(reference string) (*entry, error) {
-	found, err := r.resolveOrActive(reference)
+	found, err := r.resolve(reference)
 	if err != nil {
 		return nil, err
 	}
@@ -287,12 +261,11 @@ func describe(found *entry) string {
 	return found.id()
 }
 
-// add registers a new live session and makes it active.
+// add registers a new live session.
 func (r *registry) add(live *session.Session, directory string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[live.ID()] = &entry{live: live, directory: directory}
-	r.active = live.ID()
 	// Only a running session can hold a name. Reusing the name of one that has
 	// ended is allowed on purpose -- naming each build "build" is the workflow
 	// the tools describe -- so the ended one gives the name up here rather than
@@ -343,42 +316,7 @@ func (r *registry) remove(id string) string {
 		return ""
 	}
 	delete(r.entries, id)
-	if r.active == id {
-		r.active = r.mostRecentLiveLocked()
-	}
 	return found.directory
-}
-
-// mostRecentLiveLocked picks the successor active session. Callers hold the
-// write lock.
-func (r *registry) mostRecentLiveLocked() string {
-	var best *entry
-	for _, candidate := range r.entries {
-		if !candidate.running() {
-			continue
-		}
-		if best == nil || candidate.lastActivity().After(best.lastActivity()) {
-			best = candidate
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return best.id()
-}
-
-// setActive changes the active session.
-func (r *registry) setActive(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.active = id
-}
-
-// activeID reports the active session.
-func (r *registry) activeID() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.active
 }
 
 // counts reports total and live session counts.

@@ -39,11 +39,10 @@ session is `enter` on a freshly opened application with nothing selected yet.
 │                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────╯
   ↑↓ navigate · enter open · n new · backspace delete · r rename
-  a set active · c configure · q quit
+  c configure · q quit
 ```
 
-- `●` green for running, `○` grey for exited. The active session's name is
-  bold — it is the one an agent reaches without naming a session.
+- `●` green for running, `○` grey for exited.
 - Rows refresh on a 1 s ticker while Home is visible; the daemon is polled, so
   a session the agent creates appears without the human doing anything.
 - `↑`/`↓` and `k`/`j` navigate. Wraps at both ends.
@@ -67,7 +66,6 @@ session is `enter` on a freshly opened application with nothing selected yet.
   choice reversible or not.
 - `r` renames in place with an inline text input, validated against the same
   name rules the MCP tools use.
-- `a` makes the highlighted session active.
 - `c` opens Configure.
 - `q` quits the application. It does **not** stop the daemon or kill sessions;
   the agent's terminals keep running. `Q` offers to stop the daemon too, after

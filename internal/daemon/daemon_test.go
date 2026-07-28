@@ -99,8 +99,8 @@ func TestSessionLifecycleAcrossCalls(t *testing.T) {
 
 	var listed ipc.ListResult
 	mustCall(t, client, ipc.OpSessionList, nil, &listed)
-	if len(listed.Sessions) != 1 || listed.Active != created.Session.ID {
-		t.Fatalf("list: got %d sessions, active %q", len(listed.Sessions), listed.Active)
+	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != created.Session.ID {
+		t.Fatalf("list: got %d sessions, first %q", len(listed.Sessions), listed.Sessions[0].ID)
 	}
 
 	// The name resolves as well as the id.
@@ -117,40 +117,14 @@ func TestSendAndReadRoundTrip(t *testing.T) {
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, WaitMS: 1500}, &created)
 
 	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
-		Text: "PS1=''; echo daemon-round-trip", HasText: true, Enter: true, WaitMS: 4000,
+		Session: created.Session.ID,
+		Text:    "PS1=''; echo daemon-round-trip", HasText: true, Enter: true, WaitMS: 4000,
 	}, &ipc.Screen{})
 
 	var screen ipc.Screen
-	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{WaitMS: 1000}, &screen)
+	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: created.Session.ID, WaitMS: 1000}, &screen)
 	if !strings.Contains(strings.Join(screen.Lines, "\n"), "daemon-round-trip") {
 		t.Errorf("screen did not show the command output:\n%s", strings.Join(screen.Lines, "\n"))
-	}
-}
-
-// The active session is what every tool falls back to, so switching it must be
-// observable immediately by a call that names nothing.
-func TestActiveSessionSelection(t *testing.T) {
-	_, client, _ := newTestDaemon(t)
-
-	var first, second ipc.Screen
-	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Name: "one", Argv: []string{"sh"}, WaitMS: 800}, &first)
-	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Name: "two", Argv: []string{"sh"}, WaitMS: 800}, &second)
-
-	var active ipc.ActiveResult
-	mustCall(t, client, ipc.OpSessionAtive, ipc.ActiveArgs{}, &active)
-	if active.Active == nil || active.Active.Session.ID != second.Session.ID {
-		t.Fatalf("the newest session should be active, got %+v", active.Active)
-	}
-
-	mustCall(t, client, ipc.OpSessionAtive, ipc.ActiveArgs{Session: "one", Set: true}, &active)
-	if active.Active == nil || active.Active.Session.ID != first.Session.ID {
-		t.Fatalf("active should now be the first session, got %+v", active.Active)
-	}
-
-	var screen ipc.Screen
-	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{}, &screen)
-	if screen.Session.ID != first.Session.ID {
-		t.Errorf("a call with no session should use the active one, got %q", screen.Session.ID)
 	}
 }
 
@@ -208,7 +182,8 @@ func TestInterruptLeavesTheSessionUsable(t *testing.T) {
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Name: "busy", Argv: []string{"sh"}, WaitMS: 1500}, &created)
 
 	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
-		Text: "PS1=''; sleep 30", HasText: true, Enter: true, WaitMS: 500,
+		Session: "busy",
+		Text:    "PS1=''; sleep 30", HasText: true, Enter: true, WaitMS: 500,
 	}, &ipc.Screen{})
 
 	var result ipc.KillResult
@@ -219,7 +194,8 @@ func TestInterruptLeavesTheSessionUsable(t *testing.T) {
 
 	var screen ipc.Screen
 	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
-		Text: "echo still-alive", HasText: true, Enter: true, WaitMS: 4000,
+		Session: "busy",
+		Text:    "echo still-alive", HasText: true, Enter: true, WaitMS: 4000,
 	}, &screen)
 	if !strings.Contains(strings.Join(screen.Lines, "\n"), "still-alive") {
 		t.Errorf("the session should still accept commands after an interrupt:\n%s",
@@ -286,18 +262,22 @@ func TestUnknownSessionIsActionable(t *testing.T) {
 	}
 }
 
-func TestNoActiveSessionIsActionable(t *testing.T) {
+func TestOmittingTheSessionIsRejected(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, WaitMS: 800}, &ipc.Screen{})
+
+	// There is no current session to fall back to. Agents share one daemon, so
+	// guessing a target would run one agent's command in another's terminal.
 	err := call(t, client, ipc.OpSessionRead, ipc.ReadArgs{}, &ipc.Screen{})
 	if err == nil {
-		t.Fatal("reading with no active session should fail")
+		t.Fatal("a call with no session should be rejected, not resolved to something")
 	}
 	typed, ok := err.(*ipc.Error)
-	if !ok || typed.Code != ipc.CodeNoActiveSession {
-		t.Fatalf("expected no_active_session, got %v", err)
+	if !ok || typed.Code != ipc.CodeInvalidInput {
+		t.Fatalf("expected invalid_input, got %v", err)
 	}
-	if !strings.Contains(typed.Hint, "it_new") {
-		t.Errorf("hint should suggest creating a session, got %q", typed.Hint)
+	if !strings.Contains(typed.Hint, "it_list") {
+		t.Errorf("hint should name a concrete next call, got %q", typed.Hint)
 	}
 }
 
@@ -305,16 +285,18 @@ func TestNoActiveSessionIsActionable(t *testing.T) {
 // drawing for the old size.
 func TestResizeThroughRead(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
-	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, Cols: 80, Rows: 24, WaitMS: 1500}, &ipc.Screen{})
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, Cols: 80, Rows: 24, WaitMS: 1500}, &created)
 
 	var screen ipc.Screen
-	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Cols: 100, Rows: 40, WaitMS: 1000}, &screen)
+	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: created.Session.ID, Cols: 100, Rows: 40, WaitMS: 1000}, &screen)
 	if screen.Session.Cols != 100 || screen.Session.Rows != 40 {
 		t.Fatalf("size: got %dx%d, want 100x40", screen.Session.Cols, screen.Session.Rows)
 	}
 
 	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
-		Text: "PS1=''; stty size", HasText: true, Enter: true, WaitMS: 4000,
+		Session: created.Session.ID,
+		Text:    "PS1=''; stty size", HasText: true, Enter: true, WaitMS: 4000,
 	}, &screen)
 	if !strings.Contains(strings.Join(screen.Lines, "\n"), "40 100") {
 		t.Errorf("the child should see the new size:\n%s", strings.Join(screen.Lines, "\n"))
@@ -494,5 +476,38 @@ func TestRenamingTakesTheNameFromAnEndedSession(t *testing.T) {
 			t.Fatalf("attempt %d resolved \"api\" to %s; expected %s",
 				attempt, got.Session.ID, live.Session.ID)
 		}
+	}
+}
+
+// Two agents share one daemon. Nothing in a request identifies which agent
+// made it, so any notion of a current session would be shared between them,
+// and one agent creating a session would silently redirect the other's next
+// command into it. Requiring the target is what makes concurrent use safe, so
+// creating a session must not make later calls resolve anywhere by itself.
+func TestCreatingASessionDoesNotRedirectOtherCalls(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var first ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "agent-a", Argv: []string{"sh"}, WaitMS: 1500}, &first)
+	var second ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "agent-b", Argv: []string{"sh"}, WaitMS: 1500}, &second)
+
+	// Each named call reaches its own session no matter which was created last.
+	for _, want := range []ipc.Screen{first, second} {
+		var got ipc.Screen
+		mustCall(t, client, ipc.OpSessionRead,
+			ipc.ReadArgs{Session: want.Session.Name, WaitMS: 500}, &got)
+		if got.Session.ID != want.Session.ID {
+			t.Errorf("%q resolved to %s, want %s", want.Session.Name, got.Session.ID, want.Session.ID)
+		}
+	}
+
+	// And an unnamed call resolves to neither. It fails, which is the only
+	// answer that cannot be the wrong terminal.
+	if err := call(t, client, ipc.OpSessionSend,
+		ipc.SendArgs{Text: "echo x", HasText: true, Enter: true, WaitMS: 500}, &ipc.Screen{}); err == nil {
+		t.Error("a call naming no session must fail rather than pick one")
 	}
 }

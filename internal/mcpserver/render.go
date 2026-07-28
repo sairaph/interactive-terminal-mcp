@@ -72,12 +72,11 @@ func documentResult(document render.Document) *mcp.CallToolResult {
 
 // --- screen output ----------------------------------------------------------
 
-// screenMetadata is the frontmatter shared by it_active, it_new, it_read, and
-// it_send. One shape across four tools means a model learns it once.
+// screenMetadata is the frontmatter shared by it_new, it_read, and it_send.
+// One shape across three tools means a model learns it once.
 type screenMetadata struct {
 	Session   string `yaml:"session"`
 	Name      string `yaml:"name,omitempty"`
-	Active    bool   `yaml:"active"`
 	Running   bool   `yaml:"running"`
 	ExitCode  *int   `yaml:"exit_code,omitempty"`
 	PID       int    `yaml:"pid,omitempty"`
@@ -111,7 +110,7 @@ type screenMetadata struct {
 func screenFront(screen ipc.Screen) screenMetadata {
 	info := screen.Session
 	front := screenMetadata{
-		Session: info.ID, Name: info.Name, Active: info.Active,
+		Session: info.ID, Name: info.Name,
 		Running: info.Running, ExitCode: info.ExitCode, PID: info.PID,
 		Size:      []int{info.Cols, info.Rows},
 		Cursor:    []int{screen.Cursor[0], screen.Cursor[1]},
@@ -231,26 +230,6 @@ func waitNote(screen ipc.Screen) string {
 	return ""
 }
 
-func activeGuidance(screen ipc.Screen) []string {
-	info := screen.Session
-	if !info.Running {
-		return []string{fmt.Sprintf(
-			"Session %s has ended%s. Its screen and logs are still readable. Start a new one with `%s`.",
-			label(info), exitPhrase(info), call("it_new", map[string]any{}))}
-	}
-	if info.AltScreen {
-		// Typing a command line into a pager or an editor does not run it; it
-		// is interpreted as whatever those keys mean to that program.
-		return []string{fmt.Sprintf(
-			"Session %s is active and a full-screen program is running in it, so send it keystrokes rather than "+
-				"a command line, as in `%s`.",
-			label(info), call("it_send", map[string]any{"keys": "DOWN*5"}))}
-	}
-	return []string{fmt.Sprintf(
-		"Session %s is active. Run a command with `%s`.",
-		label(info), call("it_send", map[string]any{"text": exampleCommand(info)}))}
-}
-
 // exampleCommand picks a command line valid in the interpreter this session is
 // actually running. Offering `ls -la` to PowerShell teaches an agent a command
 // that fails there.
@@ -279,14 +258,7 @@ func newGuidance(screen ipc.Screen) []string {
 			"The command finished%s before this call returned. Read its output with `%s`.",
 			exitPhrase(info), call("it_tail", map[string]any{"session": info.ID}))}
 	}
-	opening := fmt.Sprintf("Session %s is active", label(info))
-	if !info.Active {
-		// Another session was created between this one starting and this reply
-		// being written, so the flag above is already stale. Saying "is active"
-		// would send the next call to the wrong terminal.
-		opening = fmt.Sprintf("Session %s was created, but another session is active now, "+
-			"so name it explicitly in later calls", label(info))
-	}
+	opening := fmt.Sprintf("Session %s is ready", label(info))
 	if info.Shell != "" {
 		// Which interpreter is running decides the syntax of every command the
 		// caller is about to write, and on Windows it is not guessable.
@@ -297,13 +269,13 @@ func newGuidance(screen ipc.Screen) []string {
 			"%s. A full-screen program is running in it, so send it keystrokes with `%s`, and read it again "+
 				"later with `%s`.",
 			opening,
-			call("it_send", map[string]any{"keys": "DOWN*5"}),
+			call("it_send", map[string]any{"session": info.ID, "keys": "DOWN*5"}),
 			call("it_read", map[string]any{"session": info.ID}))}
 	}
 	return []string{fmt.Sprintf(
 		"%s. Type into it with `%s`, and read it again later with `%s`.",
 		opening,
-		call("it_send", map[string]any{"text": exampleCommand(info)}),
+		call("it_send", map[string]any{"session": info.ID, "text": exampleCommand(info)}),
 		call("it_read", map[string]any{"session": info.ID}))}
 }
 
@@ -366,53 +338,13 @@ func scrollbackNote(info ipc.SessionInfo) []string {
 	return nil
 }
 
-// --- it_active with nothing active ------------------------------------------
-
-type noActiveMetadata struct {
-	Active        any `yaml:"active"`
-	LiveSessions  int `yaml:"live_sessions"`
-	TotalSessions int `yaml:"total_sessions"`
-}
-
-func noActiveFront(result ipc.ActiveResult) noActiveMetadata {
-	return noActiveMetadata{Active: nil, LiveSessions: result.LiveSessions, TotalSessions: result.TotalSessions}
-}
-
-func noActiveBody(result ipc.ActiveResult) string {
-	if result.TotalSessions == 0 {
-		return fmt.Sprintf(
-			"No session is currently active, and none exist. Create one with `%s`.",
-			call("it_new", map[string]any{}))
-	}
-	if result.LiveSessions == 0 {
-		// Pointing at a dead session is not a useful next step, and whether its
-		// output survives at all depends on the retention policy, so the way in
-		// is it_list: it reports what is left and whether the logs are still
-		// there rather than promising output that may have been deleted.
-		return fmt.Sprintf(
-			"No session is active, and none of the %d %s still running. See what they left behind with `%s`. "+
-				"To run anything, create a session with `%s`.",
-			result.TotalSessions, plural(result.TotalSessions, "session is", "sessions are"),
-			call("it_list", map[string]any{}),
-			call("it_new", map[string]any{}))
-	}
-	return fmt.Sprintf(
-		"No session is currently active, but %d of %d %s still running. List them with `%s`, then select one with `%s` or create another with `%s`.",
-		result.LiveSessions, result.TotalSessions,
-		plural(result.LiveSessions, "is", "are"),
-		call("it_list", map[string]any{}),
-		call("it_active", map[string]any{"session": "<id>"}),
-		call("it_new", map[string]any{}))
-}
-
 // --- it_list ----------------------------------------------------------------
 
 type listMetadata struct {
-	Page       int    `yaml:"page"`
-	Total      int    `yaml:"total"`
-	TotalPages int    `yaml:"total_pages"`
-	Active     string `yaml:"active,omitempty"`
-	Verbose    bool   `yaml:"verbose,omitempty"`
+	Page       int  `yaml:"page"`
+	Total      int  `yaml:"total"`
+	TotalPages int  `yaml:"total_pages"`
+	Verbose    bool `yaml:"verbose,omitempty"`
 	// Retention is the log retention policy, which decides how long an ended
 	// session stays listed at all.
 	Retention string    `yaml:"retention,omitempty"`
@@ -435,7 +367,6 @@ func firstRunning(rows []listRow) *listRow {
 type listRow struct {
 	ID              string `yaml:"id"`
 	Name            string `yaml:"name,omitempty"`
-	Active          bool   `yaml:"active,omitempty"`
 	Running         bool   `yaml:"running"`
 	ExitCode        *int   `yaml:"exit_code,omitempty"`
 	KilledBy        string `yaml:"killed_by,omitempty"`
@@ -458,7 +389,7 @@ type listRow struct {
 // worth reading.
 func (r listRow) compact() listRow {
 	return listRow{
-		ID: r.ID, Name: r.Name, Active: r.Active, Running: r.Running,
+		ID: r.ID, Name: r.Name, Running: r.Running,
 		ExitCode: r.ExitCode, KilledBy: r.KilledBy,
 		Command: r.Command, LastActivityAt: r.LastActivityAt,
 		// Kept because it is not optional detail: dropping it left every row
@@ -472,7 +403,7 @@ func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any
 	rows := make([]listRow, 0, len(result.Sessions))
 	for _, info := range result.Sessions {
 		rows = append(rows, listRow{
-			ID: info.ID, Name: info.Name, Active: info.Active, Running: info.Running,
+			ID: info.ID, Name: info.Name, Running: info.Running,
 			ExitCode: info.ExitCode, KilledBy: info.KilledBy, PID: info.PID,
 			Command: commandText(info), Shell: info.Shell, Cwd: info.Cwd,
 			Size:      []int{info.Cols, info.Rows},
@@ -501,7 +432,7 @@ func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any
 
 	front := listMetadata{
 		Page: page, Total: len(rows), TotalPages: totalPages,
-		Active: result.Active, Verbose: verbose,
+		Verbose:   verbose,
 		Retention: result.Retention, Sessions: window,
 	}
 	return front, listBody(front, window, result.Sessions), nil
@@ -549,11 +480,6 @@ func listBody(front listMetadata, window []listRow, sessions []ipc.SessionInfo) 
 	// Pointing it_send at a session this same reply reports as ended costs the
 	// caller a round trip to be told what it already knew.
 	running := firstRunning(window)
-	if front.Active == "" && running != nil {
-		parts = append(parts, fmt.Sprintf(
-			"No session is active. Select one with `%s` so the other tools can default to it.",
-			call("it_active", map[string]any{"session": running.ID})))
-	}
 	if running != nil {
 		parts = append(parts, fmt.Sprintf(
 			"Read a session with `%s`, or type into it with `%s`.",

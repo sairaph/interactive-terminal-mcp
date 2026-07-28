@@ -38,7 +38,7 @@ func requireDocument(t *testing.T, body string) {
 
 func sampleSession() ipc.SessionInfo {
 	return ipc.SessionInfo{
-		ID: "t-k3f9qa", Name: "build", Active: true, Running: true, PID: 48213,
+		ID: "t-k3f9qa", Name: "build", Running: true, PID: 48213,
 		Command: []string{"/bin/bash"}, Cwd: "/home/user/project",
 		Cols: 120, Rows: 30,
 		CreatedAt:       time.Date(2026, 7, 27, 9, 12, 3, 0, time.UTC),
@@ -160,62 +160,6 @@ func TestEndedSessionWithLogSuggestsTail(t *testing.T) {
 	}
 }
 
-func TestNoActiveSessionGuidance(t *testing.T) {
-	empty := ipc.ActiveResult{LiveSessions: 0, TotalSessions: 0}
-	body := text(t, successResult(noActiveFront(empty), noActiveBody(empty)))
-	requireDocument(t, body)
-	if !strings.Contains(body, "active: null") {
-		t.Errorf("frontmatter should report no active session:\n%s", body)
-	}
-	if !strings.Contains(body, "it_new({})") {
-		t.Errorf("body should offer to create one:\n%s", body)
-	}
-
-	// With live sessions present but none active, the advice is different:
-	// select one rather than pile up another.
-	existing := ipc.ActiveResult{LiveSessions: 2, TotalSessions: 3}
-	body = text(t, successResult(noActiveFront(existing), noActiveBody(existing)))
-	if !strings.Contains(body, "it_list({})") {
-		t.Errorf("body should offer to list the existing sessions:\n%s", body)
-	}
-	if !strings.Contains(body, `it_active({"session":"<id>"})`) {
-		t.Errorf("body should offer to select one:\n%s", body)
-	}
-
-	// When every session is dead, selecting one is useless advice: nothing can
-	// be run in it. What is left is finding out what they left behind, which
-	// it_list answers -- including whether the logs still exist, which under
-	// the default retention policy they do not.
-	allDead := ipc.ActiveResult{LiveSessions: 0, TotalSessions: 11}
-	body = text(t, successResult(noActiveFront(allDead), noActiveBody(allDead)))
-	if strings.Contains(body, "it_active({") {
-		t.Errorf("selecting a dead session is not a useful next step:\n%s", body)
-	}
-	if strings.Contains(body, "it_tail") {
-		t.Errorf("their logs may already have been deleted; do not promise them:\n%s", body)
-	}
-	if !strings.Contains(body, "it_list") || !strings.Contains(body, "it_new") {
-		t.Errorf("body should offer to see what is left or start fresh:\n%s", body)
-	}
-}
-
-// Two creates racing can leave the first reply's active flag stale. Telling
-// the caller a session "is active" when another already took over would send
-// the next call to the wrong terminal.
-func TestNewReportsWhenItLostTheActiveSlot(t *testing.T) {
-	info := sampleSession()
-	info.Active = false
-	screen := ipc.Screen{Session: info, Lines: []string{"$"}, Settled: true, Observed: true}
-	body := screenBody(screen, newGuidance(screen))
-
-	if strings.Contains(body, "is active.") {
-		t.Errorf("a session that lost the active slot must not claim it:\n%s", body)
-	}
-	if !strings.Contains(body, "another session is active now") {
-		t.Errorf("the caller should be told to name the session explicitly:\n%s", body)
-	}
-}
-
 func TestListResultShapeAndPagination(t *testing.T) {
 	code := 0
 	sessions := []ipc.SessionInfo{sampleSession(), {
@@ -225,7 +169,7 @@ func TestListResultShapeAndPagination(t *testing.T) {
 		LastActivityAt:  time.Date(2026, 7, 27, 9, 5, 10, 0, time.UTC),
 		TranscriptLines: 96,
 	}}
-	front, body, err := renderList(ipc.ListResult{Active: "t-k3f9qa", Sessions: sessions}, 1, 2000, true)
+	front, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 2000, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,15 +405,23 @@ func TestFencesSurviveHostileOutput(t *testing.T) {
 func TestSchemasDeclareTheDocumentedShape(t *testing.T) {
 	settings := config.Default()
 
-	kill := killSchema()
-	required, _ := kill["required"].([]string)
-	if len(required) != 1 || required[0] != "session" {
-		t.Errorf("it_kill must require session, got %v", kill["required"])
+	// Every tool that acts on a session must demand one. Agents share a
+	// daemon, so a tool that could fall back to some current session would
+	// route one agent's call into another's terminal.
+	for name, schema := range map[string]map[string]any{
+		"it_kill": killSchema(), "it_read": readSchema(settings),
+		"it_send": sendSchema(settings), "it_tail": logSchema(true),
+		"it_head": logSchema(false),
+	} {
+		required, _ := schema["required"].([]string)
+		if len(required) != 1 || required[0] != "session" {
+			t.Errorf("%s must require session, got %v", name, schema["required"])
+		}
 	}
 
 	for name, schema := range map[string]map[string]any{
-		"it_active": activeSchema(), "it_list": listSchema(),
-		"it_new": newSchema(settings), "it_read": readSchema(settings),
+		"it_list": listSchema(),
+		"it_new":  newSchema(settings), "it_read": readSchema(settings),
 		"it_send": sendSchema(settings), "it_tail": logSchema(true),
 		"it_head": logSchema(false),
 	} {
@@ -660,8 +612,8 @@ func TestToolTextIsForwardFacing(t *testing.T) {
 		"instructions": Instructions,
 	}
 	schemas := map[string]map[string]any{
-		"it_active": activeSchema(), "it_list": listSchema(),
-		"it_new": newSchema(settings), "it_read": readSchema(settings),
+		"it_list": listSchema(),
+		"it_new":  newSchema(settings), "it_read": readSchema(settings),
 		"it_send": sendSchema(settings), "it_kill": killSchema(),
 		"it_tail": logSchema(true), "it_head": logSchema(false),
 	}
@@ -918,7 +870,7 @@ func TestExampleCommandMatchesTheRunningShell(t *testing.T) {
 		info := sampleSession()
 		info.Shell = shell
 		screen := ipc.Screen{Session: info, Lines: []string{"> "}, Settled: true, Observed: true}
-		body := strings.Join(activeGuidance(screen), "\n")
+		body := strings.Join(newGuidance(screen), "\n")
 		if !strings.Contains(body, want) {
 			t.Errorf("%s should be offered %q, got:\n%s", shell, want, body)
 		}
@@ -927,11 +879,11 @@ func TestExampleCommandMatchesTheRunningShell(t *testing.T) {
 
 // Typing a command line into a pager does not run it; the keys mean something
 // else entirely to the program that owns the screen.
-func TestActiveGuidanceOffersKeystrokesToAFullScreenProgram(t *testing.T) {
+func TestNewGuidanceOffersKeystrokesToAFullScreenProgram(t *testing.T) {
 	info := sampleSession()
 	info.AltScreen = true
 	screen := ipc.Screen{Session: info, Lines: []string{":"}, Settled: true, Observed: true}
-	body := strings.Join(activeGuidance(screen), "\n")
+	body := strings.Join(newGuidance(screen), "\n")
 
 	if strings.Contains(body, `"text"`) {
 		t.Errorf("a command line is the wrong thing to send here:\n%s", body)
@@ -1025,5 +977,25 @@ func TestListHintUsesTheSessionsOwnSyntax(t *testing.T) {
 	}
 	if !strings.Contains(body, `"dir"`) {
 		t.Errorf("a cmd session should be offered dir:\n%s", body)
+	}
+}
+
+// Omitting the session is the mistake an agent is most likely to make now that
+// every tool requires one, so it must not be answered with the validator's own
+// machine-generated text.
+func TestMissingSessionReadsLikeTheRestOfTheProduct(t *testing.T) {
+	got := cleanValidationMessage(`validating "arguments": required: missing properties: ["session"]`)
+	if got != "session is required" {
+		t.Errorf("got %q, want %q", got, "session is required")
+	}
+	if strings.Contains(got, "[") || strings.Contains(got, "properties") {
+		t.Errorf("the validator's framing should be gone, got %q", got)
+	}
+}
+
+func TestSeveralMissingArgumentsReadAsASentence(t *testing.T) {
+	got := cleanValidationMessage(`validating "arguments": required: missing properties: ["session","lines"]`)
+	if got != "session and lines are required" {
+		t.Errorf("got %q", got)
 	}
 }

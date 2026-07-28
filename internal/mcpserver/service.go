@@ -29,7 +29,9 @@ const (
 // detail, and a long preamble is paid for on every request.
 const Instructions = `Persistent terminal sessions. Each session is a real shell that keeps running between tool calls, so you can start a long command, do something else, and come back to it.
 
-Typical flow: it_active to see if a session already exists, it_new to create one, it_send to run commands, it_read to check on them, it_tail for output that has scrolled away.
+Typical flow: it_list to see whether a session already exists, it_new to create one, it_send to run commands, it_read to check on them, it_tail for output that has scrolled away.
+
+Every tool that touches a session takes its id or name; there is no current session. it_new returns the id to use.
 
 Sessions support full-screen programs (vim, htop, less). Send keystrokes to them with the keys argument.`
 
@@ -44,7 +46,7 @@ type Service struct {
 	server   *mcp.Server
 }
 
-// New constructs the eight-tool MCP service.
+// New constructs the seven-tool MCP service.
 func New(dial Dialer, settings config.Config, version string) (*Service, error) {
 	if dial == nil {
 		return nil, errors.New("a daemon dialer is required")
@@ -115,14 +117,6 @@ func (s *Service) call(ctx context.Context, op string, args any, result any) err
 
 func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_active",
-		Description: "Report which terminal session is active, or switch to another one. " +
-			"Call it with no arguments first to find out whether a session already exists before creating one. " +
-			"Returns the session's current screen. The active session is the one every other tool uses when you do not name a session; use it_list to see them all, or it_new to start one.",
-		InputSchema: activeSchema(),
-	}, s.active)
-
-	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_list",
 		Description: "List all terminal sessions, running and recently ended, newest activity first. " +
 			"Each entry carries its id, name, whether it is running, its exit code, the command it runs, " +
@@ -133,7 +127,7 @@ func (s *Service) registerTools() {
 
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_new",
-		Description: "Create a terminal session, make it active, and return its first screen. " +
+		Description: "Create a terminal session and return its first screen, along with the id every other tool needs. " +
 			"With no command it starts " + defaultShellPhrase() + ", and you then run commands with it_send. " +
 			"Pass command to run one program instead. The session keeps running after this call returns, so long builds and servers are fine.",
 		InputSchema: newSchema(s.settings),
@@ -161,8 +155,7 @@ func (s *Service) registerTools() {
 
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_kill",
-		Description: "End a terminal session. The session argument is always required: it is never taken from the active session, " +
-			"because ending the wrong terminal cannot be undone. " +
+		Description: "End a terminal session. Check the id you pass: ending the wrong terminal cannot be undone. " +
 			"Sends TERM by default and escalates to KILL if the process does not exit. " +
 			"INT asks the running command to stop and leaves the session usable, and the reply reports whether it " +
 			"actually stopped. Find the session to end with it_list.",
@@ -206,10 +199,15 @@ func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
-// sessionProperty is the shared session selector. Its description states the
-// fallback explicitly so a model does not have to infer it.
+// sessionProperty is the shared session selector.
+//
+// It is required on every tool that touches a session. There is deliberately
+// no default: agents run in parallel against one daemon, and a shared
+// "current session" would route one agent's command into another's terminal
+// with no error and no way to tell from the reply. Naming the target is the
+// only thing that makes concurrent use safe.
 func sessionProperty() map[string]any {
-	return stringProperty("Session id or name. Defaults to the active session.")
+	return stringProperty("Session id or name, as returned by it_new or it_list. Required.")
 }
 
 func pageProperty() map[string]any {
@@ -264,12 +262,6 @@ func rowsProperty(settings config.Config) map[string]any {
 		"type": "integer", "minimum": 5, "maximum": 1000, "default": settings.DefaultRows,
 		"description": fmt.Sprintf("Terminal height in rows; defaults to %d", settings.DefaultRows),
 	}
-}
-
-func activeSchema() map[string]any {
-	return objectSchema(map[string]any{
-		"session": stringProperty("Session id or name to make active. Omit to report the current active session."),
-	})
 }
 
 func listSchema() map[string]any {
@@ -376,7 +368,7 @@ func readSchema(settings config.Config) map[string]any {
 		},
 		"wait":     waitProperty(settings, 0, "Useful for a command that prints as it works."),
 		"wait_for": waitForProperty(false),
-	})
+	}, "session")
 }
 
 func sendSchema(settings config.Config) map[string]any {
@@ -397,12 +389,12 @@ func sendSchema(settings config.Config) map[string]any {
 		},
 		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a command you expect to take a while."),
 		"wait_for": waitForProperty(true),
-	})
+	}, "session")
 }
 
 func killSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"session": stringProperty("Session id or name to end. Required; the active session is never assumed."),
+		"session": stringProperty("Session id or name to end, as returned by it_new or it_list. Required."),
 		"signal": map[string]any{
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
@@ -439,7 +431,7 @@ func logSchema(tail bool) map[string]any {
 				"and the newest output is missing. It matters most for a full-screen program, whose output never reaches the log at all.",
 		}
 	}
-	return objectSchema(properties)
+	return objectSchema(properties, "session")
 }
 
 // renderSDKToolErrors converts the SDK's own argument-validation failures into
@@ -465,11 +457,19 @@ func renderSDKToolErrors(next mcp.MethodHandler) mcp.MethodHandler {
 				message = text.Text
 			}
 		}
+		cleaned := cleanValidationMessage(message)
+		hint := "Correct the arguments and call " + name + " again. " +
+			"The tool's input schema lists the accepted arguments and their limits."
+		if strings.HasPrefix(cleaned, "session is required") {
+			// The most likely mistake by far, and the generic hint does not
+			// answer it. Say where a session id comes from.
+			hint = "Name the session to act on, as in " + name +
+				`({"session":"build", ...}). Call it_list() to see what exists, or it_new() to start one.`
+		}
 		return errorResult(&ipc.Error{
 			Code:    ipc.CodeInvalidInput,
-			Message: cleanValidationMessage(message),
-			Hint: "Correct the arguments and call " + name + " again. " +
-				"The tool's input schema lists the accepted arguments and their limits.",
+			Message: cleaned,
+			Hint:    hint,
 		}), nil
 	}
 }
@@ -500,6 +500,9 @@ func cleanValidationMessage(message string) string {
 	if trimmed == "" {
 		return message
 	}
+	if missing := missingProperties(trimmed); missing != "" {
+		return missing
+	}
 	if prose := asProse(property, trimmed); prose != "" {
 		return prose
 	}
@@ -507,6 +510,31 @@ func cleanValidationMessage(message string) string {
 		return property + ": " + trimmed
 	}
 	return trimmed
+}
+
+// missingProperties rewrites the validator's required-property failure, which
+// arrives as `required: missing properties: ["session"]`. That is the one
+// message an agent is most likely to meet, and machine-generated text reads as
+// a bug in a product whose every other message is written by hand.
+func missingProperties(message string) string {
+	const prefix = "required: missing properties: "
+	if !strings.HasPrefix(message, prefix) {
+		return ""
+	}
+	list := strings.TrimPrefix(message, prefix)
+	list = strings.Trim(list, "[]")
+	names := strings.Split(list, ",")
+	for index := range names {
+		names[index] = strings.Trim(strings.TrimSpace(names[index]), `"`)
+	}
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0] + " is required"
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] + " are required"
+	}
 }
 
 // asProse rewrites the validator's bound checks as a sentence.

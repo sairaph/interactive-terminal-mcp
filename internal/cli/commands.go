@@ -71,16 +71,10 @@ func runList(ctx context.Context, runtime *bootstrap.Runtime, options Options) i
 		if name == "" {
 			name = "-"
 		}
-		if info.Active {
-			name += " *"
-		}
 		fmt.Fprintf(options.Stdout, "%-10s %-16s %-10s %-8s %-14s %d lines\n",
 			info.ID, name, stateText(info),
 			fmt.Sprintf("%dx%d", info.Cols, info.Rows),
 			relativeTime(info.LastActivityAt), info.TranscriptLines)
-	}
-	if result.Active == "" {
-		fmt.Fprintln(options.Stdout, "\nNo active session (* marks the active one).")
 	}
 	return 0
 }
@@ -320,9 +314,11 @@ func fail(options Options, err error) int {
 // their own terms.
 func humanHint(hint string) string {
 	replacements := []struct{ from, to string }{
+		// The longer form is replaced first; otherwise "it_list()" would match
+		// inside "it_list({})" and leave a stray "{})" behind.
+		{`it_list({})`, "`interactive-terminal-mcp ls`"},
 		{"it_list()", "`interactive-terminal-mcp ls`"},
 		{"it_new({})", "`interactive-terminal-mcp new`"},
-		{`it_active({"session":"<id>"})`, "`interactive-terminal-mcp read <session>`"},
 	}
 	for _, replacement := range replacements {
 		hint = strings.ReplaceAll(hint, replacement.from, replacement.to)

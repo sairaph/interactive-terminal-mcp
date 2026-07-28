@@ -97,16 +97,19 @@ Each session has a generated **id** and an optional user-supplied **name**.
   sessions, and may not start with `t-`.
 
 Any argument named `session` accepts either form. Every tool that can act on a
-session accepts `session` as an optional argument and falls back to the active
-session, except `it_kill`, which always requires it.
+session requires `session`, an id or a name.
 
-### The active session
+### Every tool names its session
 
-The daemon tracks one active session per user. It is set by `it_new` and can be
-changed with `it_active`. If the active session exits, it stays active (so the
-agent can still read its final screen and logs) until another session is
-created or selected. If the active session is killed, the most recently active
-live session becomes active, or none.
+There is no current or default session. One daemon serves every agent on the
+machine, and nothing in a request says which agent sent it, so a shared "the
+session you are working in" would be shared between agents too: one creating a
+session would silently redirect another's next command into it, with no error
+and a reply that looks perfectly normal.
+
+Requiring the target removes that failure entirely. `it_new` returns the id to
+use, `it_list` finds one later, and a call that names nothing is rejected
+rather than resolved to a guess.
 
 ### Lifecycle
 
@@ -129,9 +132,8 @@ Eight direct, typed tools. Every name is short and prefixed `it_`.
 
 | Tool | Purpose |
 |---|---|
-| `it_active` | Report or change the active session |
 | `it_list` | List sessions, token-budget paginated |
-| `it_new` | Create a session, make it active, return its screen |
+| `it_new` | Create a session and return its screen, with the id every other tool needs |
 | `it_read` | Snapshot the visible screen of a session |
 | `it_send` | Send text and/or key chords, wait, return the screen |
 | `it_kill` | Terminate a session by explicit id or name |
@@ -148,7 +150,7 @@ operation envelope, and no loose `args` object.
 
 ### Screen snapshots
 
-`it_new`, `it_read`, `it_active`, and `it_send` all return a **snapshot**: the
+`it_new`, `it_read`, and `it_send` all return a **snapshot**: the
 exact contents of the visible screen at the moment the tool returned, as plain
 text inside a tilde fence.
 
@@ -173,7 +175,6 @@ Snapshot frontmatter is shared by all four tools:
 ```yaml
 session: t-k3f9qa
 name: build
-active: true
 running: true
 pid: 48213
 size: [160, 48]
@@ -246,29 +247,6 @@ counts as an appearance is defined rather than guessed:
 Nothing is excluded on the basis of when it arrived, so a command that finishes
 in a millisecond is matched exactly as a slow one is.
 
-### `it_active`
-
-| Argument | Required | Meaning |
-|---|---:|---|
-| `session` | no | Session to make active. Omit to report the current one. |
-
-Without arguments it reports the active session and returns its snapshot. With
-`session`, it switches the active session and returns that session's snapshot.
-
-When nothing is active:
-
-```yaml
-active: null
-live_sessions: 0
-```
-
-```markdown
-No session is currently active. Create one with `it_new({})`.
-```
-
-When sessions exist but none is active, the body lists how to select one with
-`it_active({"session":"<id>"})`.
-
 ### `it_list`
 
 | Argument | Required | Meaning |
@@ -282,11 +260,9 @@ packed into pages by token budget; the caller does not control page size.
 page: 1
 total: 3
 total_pages: 1
-active: t-k3f9qa
 sessions:
   - id: t-k3f9qa
     name: build
-    active: true
     running: true
     pid: 48213
     command: /bin/bash
@@ -300,7 +276,6 @@ sessions:
     log_path: /home/lael/.interactive-terminal-mcp/sessions/t-k3f9qa/transcript.log
   - id: t-p2m8wd
     name: null
-    active: false
     running: false
     exit_code: 0
     exited_at: 2026-07-27T09:05:10Z
@@ -360,7 +335,7 @@ whatever it restores from disk.
 - An array is executed directly with no shell, so arguments containing spaces
   or quotes need no escaping.
 
-The session is created, made active, and its first screen is returned. The
+The session is created and its first screen is returned. The
 default `wait: 2` is long enough for a shell prompt to be drawn.
 
 Creating a session with a name that is already taken by a live session is an
@@ -376,14 +351,14 @@ Body when the session started cleanly:
 lael@host:~/project$
 ~~~
 
-Session `t-k3f9qa` is active. Send input with `it_send({"text":"..."})`.
+Session `t-k3f9qa` is ready, running bash. Type into it with `it_send({"session":"t-k3f9qa","text":"ls -la"})`, and read it again later with `it_read({"session":"t-k3f9qa"})`.
 ````
 
 ### `it_read`
 
 | Argument | Required | Meaning |
 |---|---:|---|
-| `session` | no | Session to read. Defaults to the active session. |
+| `session` | **yes** | Session id or name. |
 | `cols` | no | Resize to this width before snapshotting. |
 | `rows` | no | Resize to this height before snapshotting. |
 | `wait` | no | Seconds to wait for output to settle; defaults to `0`. |
@@ -403,7 +378,7 @@ and `exit_code`, and the body points at `it_tail` for what scrolled away.
 
 | Argument | Required | Meaning |
 |---|---:|---|
-| `session` | no | Session to write to. Defaults to the active session. |
+| `session` | **yes** | Session id or name. |
 | `text` | conditional | Literal text typed into the terminal. |
 | `keys` | conditional | Key chords, see the key language below. |
 | `enter` | no | Append a carriage return after `text`. Defaults to `true`. |
@@ -460,7 +435,7 @@ fifth chord never leaves the terminal in a half-typed state.
 
 | Argument | Required | Meaning |
 |---|---:|---|
-| `session` | **yes** | Session id or name. Never inferred from the active session. |
+| `session` | **yes** | Session id or name. Check it: ending the wrong terminal cannot be undone. |
 | `signal` | no | `TERM` (default), `INT`, `HUP`, or `KILL`. |
 
 Requiring `session` is deliberate: killing the wrong terminal is destructive
@@ -508,7 +483,7 @@ expires.
 
 | Argument | Required | Meaning |
 |---|---:|---|
-| `session` | no | Session to read. Defaults to the active session. |
+| `session` | **yes** | Session id or name. |
 | `lines` | no | Lines requested; defaults to `100`, maximum `5000`. |
 | `screen` | no | `it_tail` only. Append the live screen after the log lines. Defaults to `true`, and should stay on: the log holds only what has scrolled off, so with it off the newest output is missing entirely. |
 
@@ -632,7 +607,6 @@ Call it_list() to see existing sessions, or it_new() to create one.
 | Code | Raised when |
 |---|---|
 | `invalid_input` | Schema-valid but semantically wrong arguments, including unparseable `keys` |
-| `no_active_session` | A tool defaulted to the active session and none is set |
 | `session_not_found` | `session` matches no live or retained session |
 | `session_exited` | Input was sent to a session whose process has ended |
 | `name_conflict` | `it_new` was given a name already held by a live session |
@@ -644,7 +618,7 @@ Every hint names a concrete next tool call.
 
 ## Confirmed Naming Rules
 
-- Tools are `it_active`, `it_list`, `it_new`, `it_read`, `it_send`, `it_kill`,
+- Tools are `it_list`, `it_new`, `it_read`, `it_send`, `it_kill`,
   `it_tail`, `it_head`.
 - A session is addressed by `session`, accepting an id or a name.
 - Literal typing is `text`; key chords are `keys`.

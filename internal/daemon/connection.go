@@ -148,12 +148,6 @@ func (c *connection) dispatch(ctx context.Context, request ipc.Request) (any, er
 			return nil, err
 		}
 		return c.daemon.handleLog(args)
-	case ipc.OpSessionAtive:
-		var args ipc.ActiveArgs
-		if err := decodeArgs(request.Args, &args); err != nil {
-			return nil, err
-		}
-		return c.daemon.handleActive(ctx, args)
 	case ipc.OpSessionRename:
 		var args ipc.RenameArgs
 		if err := decodeArgs(request.Args, &args); err != nil {

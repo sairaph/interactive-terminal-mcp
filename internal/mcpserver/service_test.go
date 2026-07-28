@@ -126,15 +126,15 @@ func TestAllToolsAreRegistered(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"it_active", "it_list", "it_new", "it_read",
+		"it_list", "it_new", "it_read",
 		"it_send", "it_kill", "it_tail", "it_head",
 	} {
 		if !found[want] {
 			t.Errorf("%s was not registered", want)
 		}
 	}
-	if len(result.Tools) != 8 {
-		t.Errorf("expected exactly 8 tools, got %d", len(result.Tools))
+	if len(result.Tools) != 7 {
+		t.Errorf("expected exactly 7 tools, got %d", len(result.Tools))
 	}
 }
 
@@ -143,12 +143,12 @@ func TestAllToolsAreRegistered(t *testing.T) {
 func TestDocumentedWorkflow(t *testing.T) {
 	session := newLiveService(t)
 
-	body, isError := callTool(t, session, "it_active", map[string]any{})
+	body, isError := callTool(t, session, "it_list", map[string]any{})
 	if isError {
-		t.Fatalf("it_active on an empty daemon should not be an error:\n%s", body)
+		t.Fatalf("it_list on an empty daemon should not be an error:\n%s", body)
 	}
-	if !strings.Contains(body, "No session is currently active") {
-		t.Errorf("it_active should report that nothing is active:\n%s", body)
+	if !strings.Contains(body, "No terminal sessions exist") {
+		t.Errorf("it_list should report an empty daemon:\n%s", body)
 	}
 
 	body, isError = callTool(t, session, "it_new", map[string]any{"name": "work", "wait": 3})
@@ -160,7 +160,7 @@ func TestDocumentedWorkflow(t *testing.T) {
 	}
 
 	body, isError = callTool(t, session, "it_send", map[string]any{
-		"text": "PS1=''; echo workflow-ok", "wait": 8,
+		"session": "work", "text": "PS1=''; echo workflow-ok", "wait": 8,
 	})
 	if isError {
 		t.Fatalf("it_send failed:\n%s", body)
@@ -274,8 +274,8 @@ func TestErrorsAreTypedAndActionable(t *testing.T) {
 	}
 
 	// Neither text nor keys leaves nothing to send.
-	callTool(t, session, "it_new", map[string]any{"wait": 2})
-	body, isError = callTool(t, session, "it_send", map[string]any{})
+	callTool(t, session, "it_new", map[string]any{"name": "target", "wait": 2})
+	body, isError = callTool(t, session, "it_send", map[string]any{"session": "target"})
 	if !isError {
 		t.Fatal("it_send with no input should be an error")
 	}
@@ -284,7 +284,7 @@ func TestErrorsAreTypedAndActionable(t *testing.T) {
 	}
 
 	// An unparseable key sequence must send nothing and say why.
-	body, isError = callTool(t, session, "it_send", map[string]any{"keys": "NOT_A_KEY"})
+	body, isError = callTool(t, session, "it_send", map[string]any{"session": "target", "keys": "NOT_A_KEY"})
 	if !isError {
 		t.Fatal("an invalid key sequence should be an error")
 	}
