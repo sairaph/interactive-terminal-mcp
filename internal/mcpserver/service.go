@@ -393,7 +393,9 @@ func killSchema() map[string]any {
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
 				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
-				"and the reply says whether the command stopped. " +
+				"and the reply says whether the command stopped. It is delivered as the interrupt character, so it " +
+				"reaches whatever owns the terminal right now, including a command running inside ssh, tmux, or a " +
+				"nested shell. it_send({\"keys\":\"CTRL+C\"}) does the same thing. " +
 				"HUP reports the terminal as closed and ends the session, escalating to KILL like TERM; " +
 				"use it for a program that treats a lost terminal differently from a request to quit. " +
 				"KILL ends the session immediately and cannot be refused.",

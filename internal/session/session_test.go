@@ -749,3 +749,66 @@ func TestWaitUntilReportsAMiss(t *testing.T) {
 	}
 	_ = session.Kill("KILL", "test")
 }
+
+// An interrupt has to reach whatever owns the terminal right now, not the
+// program this session started. When that program is a multiplexer or a
+// remote client -- tmux, ssh, wsl -- the command being interrupted is running
+// on the far side of it, and anything that signals locally hits the client
+// instead and tears the whole nested session down.
+func TestInterruptReachesACommandInsideANestedTerminal(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is needed to nest a terminal inside the session")
+	}
+	socket := "itm-test-" + t.Name()
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+
+	// A bare shell keeps this test about nesting rather than about whatever the
+	// developer's profile prints on startup.
+	session := newTestSession(t, Options{Argv: []string{"bash", "--noprofile", "--norc"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 10*time.Second)
+
+	// tmux runs the inner shell on a pty of its own and holds this one in raw
+	// mode, so the interrupt character is data to tmux and a signal only on
+	// the far side.
+	if err := session.Write([]byte("TERM=xterm-256color tmux -L " + socket + " new-session\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !session.Snapshot().AltScreen && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !session.Snapshot().AltScreen {
+		t.Skip("tmux did not take the screen; the nesting under test never happened")
+	}
+
+	// The quoting matters: the terminal echoes the command as it is typed, so a
+	// follow-up marker that survives quoting would be found on screen whether or
+	// not it ever ran. bash prints NOT-REACHED only if it reaches the echo.
+	if err := session.Write([]byte("sleep 300; echo NOT''-REACHED\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	if err := session.Kill("INT", "test"); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+
+	// The inner command must stop while everything around it survives: the
+	// multiplexer, and this session with it.
+	// Quoted for the same reason as above: while the command is still running
+	// the line discipline echoes anything typed, so an unquoted marker would be
+	// on screen whether the inner shell ever got back to a prompt or not.
+	if err := session.Write([]byte("echo SURVIVED''-NESTED\n")); err != nil {
+		t.Fatalf("the session should still be usable after an interrupt: %v", err)
+	}
+	text := waitForScreen(t, session, "SURVIVED-NESTED", 10*time.Second)
+	if strings.Contains(text, "NOT-REACHED") {
+		t.Error("the interrupted command ran its follow-up, so it was never interrupted")
+	}
+	if !session.Running() {
+		t.Error("interrupting a command inside the nested terminal ended the session")
+	}
+}

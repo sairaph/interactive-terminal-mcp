@@ -448,9 +448,18 @@ Requiring `session` is deliberate: killing the wrong terminal is destructive
 and an agent should have to name its target.
 
 `TERM`, `HUP`, and `KILL` signal the child's process group. `INT` writes the
-interrupt character to the PTY instead, which is what actually reaches a
-foreground program under a shell. On Windows, `INT` writes `0x03` to the
-ConPTY, and `TERM`/`HUP`/`KILL` terminate the process tree.
+interrupt character to the PTY instead, on every platform, which is what
+actually reaches a foreground program under a shell. `TERM`/`HUP`/`KILL`
+terminate the process tree; on Windows they end it through the job object.
+
+Writing the character rather than raising a signal is what makes `INT` work
+through a nested terminal. When the session is running `ssh`, `wsl`, or `tmux`,
+the command being interrupted lives on a pty on the far side of that client,
+and the byte is passed along to it: the client is holding this terminal in raw
+mode precisely so that control characters are data to it and signals only at
+the other end. Anything that signals locally instead hits the client and takes
+the whole nested session down with it. `it_send({"keys": "CTRL+C"})` writes the
+same byte and is interchangeable.
 
 After `TERM`, the daemon waits up to 5 seconds for the process to exit and then
 escalates to `KILL`, reporting which one ended it.
