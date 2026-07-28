@@ -125,8 +125,9 @@ func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_list",
 		Description: "List all terminal sessions, running and recently ended, newest activity first. " +
-			"Shows each session's id, name, running state, exit code, working directory, and how many lines its log holds. " +
-			"Use it to find a session to reuse with it_send instead of creating another one with it_new.",
+			"Each entry carries its id, name, whether it is running, its exit code, the command it runs, " +
+			"and how many lines its log holds. Set verbose for working directory, terminal size, and log path. " +
+			"Use it to find a session to reuse with it_send rather than starting another with it_new.",
 		InputSchema: listSchema(),
 	}, s.list)
 
@@ -161,7 +162,9 @@ func (s *Service) registerTools() {
 		Name: "it_kill",
 		Description: "End a terminal session. The session argument is always required: it is never taken from the active session, " +
 			"because ending the wrong terminal cannot be undone. " +
-			"Sends TERM by default and escalates to KILL if the process does not exit; use INT to interrupt a running command without ending the session. Find the session to end with it_list.",
+			"Sends TERM by default and escalates to KILL if the process does not exit. " +
+			"INT asks the running command to stop and usually leaves the session usable; a program may refuse it, " +
+			"so the reply reports whether the command actually stopped. Find the session to end with it_list.",
 		InputSchema: killSchema(),
 	}, s.kill)
 
@@ -267,8 +270,9 @@ func newSchema(settings config.Config) map[string]any {
 				map[string]any{"type": "string"},
 				map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
 			},
-			"description": "What to run. A string is interpreted by your shell, so pipes, redirects, and && work. " +
-				"An array is run directly with no shell, so no quoting is needed. " +
+			"description": "What to run. A string is interpreted by " + defaultShellPhrase() +
+				" unless shell says otherwise, so pipes, redirects, and && work. " +
+				"An array is run directly with no shell, so no quoting is needed and the program name is exact. " +
 				"Omit to start an interactive shell, which is usually the right choice.",
 		},
 		"cwd": stringProperty("Directory to start in. Defaults to the directory the server was started from."),
@@ -288,10 +292,15 @@ func newSchema(settings config.Config) map[string]any {
 // writing a command line knows which syntax applies before it guesses wrong.
 func defaultShellPhrase() string {
 	shell := session.DefaultShell()
-	if shell.Display == "" {
+	switch {
+	case shell.Display == "":
 		return "your shell"
+	case shell.Display == shell.ID:
+		// "bash (bash)" says the same thing twice.
+		return shell.Display
+	default:
+		return shell.Display + " (" + shell.ID + ")"
 	}
-	return shell.Display + " (" + shell.ID + ")"
 }
 
 // shellProperty offers the interpreters actually installed here. Listing only
@@ -355,8 +364,8 @@ func killSchema() map[string]any {
 		"signal": map[string]any{
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
-				"INT interrupts the running command like Ctrl-C, usually leaving the session alive. " +
-				"KILL ends it immediately without cleanup.",
+				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
+				"and the reply says whether the command stopped. KILL ends the session immediately and cannot be refused.",
 		},
 	}, "session")
 }

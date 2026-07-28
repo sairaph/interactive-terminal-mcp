@@ -639,3 +639,76 @@ func TestListIsCompactByDefault(t *testing.T) {
 		t.Errorf("verbose should restore the detail:\n%s", verboseText)
 	}
 }
+
+// Tool text describes the tool as it is. A model reads these with no memory of
+// what the product used to do, so retrospective or apologetic phrasing is pure
+// noise to it, and a description that promises a field the tool stopped
+// returning is worse than noise.
+func TestToolTextIsForwardFacing(t *testing.T) {
+	settings := config.Default()
+
+	// Every string a caller can read, from the tool text and the schemas.
+	texts := map[string]string{
+		"instructions": Instructions,
+	}
+	schemas := map[string]map[string]any{
+		"it_active": activeSchema(), "it_list": listSchema(),
+		"it_new": newSchema(settings), "it_read": readSchema(settings),
+		"it_send": sendSchema(settings), "it_kill": killSchema(),
+		"it_tail": logSchema(true), "it_head": logSchema(false),
+	}
+	for name, schema := range schemas {
+		properties, _ := schema["properties"].(map[string]any)
+		for property, raw := range properties {
+			definition, _ := raw.(map[string]any)
+			if description, _ := definition["description"].(string); description != "" {
+				texts[name+"."+property] = description
+			}
+		}
+	}
+
+	// Phrases that describe a change rather than the thing.
+	banned := []string{
+		"no longer", "now correctly", "used to", "previously", "as before",
+		"has been fixed", "instead of the old", "in earlier versions",
+		"we now", "this now", "changed to", "renamed",
+	}
+	for where, text := range texts {
+		lowered := strings.ToLower(text)
+		for _, phrase := range banned {
+			if strings.Contains(lowered, phrase) {
+				t.Errorf("%s reads as a changelog (%q): %s", where, phrase, text)
+			}
+		}
+	}
+}
+
+// A description that names a field the tool does not return sends the caller
+// looking for something that is not there.
+func TestListDescriptionMatchesWhatListReturns(t *testing.T) {
+	sessions := []ipc.SessionInfo{sampleSession()}
+
+	compactFront, _, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 100_000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verboseFront, _, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 100_000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact := text(t, successResult(compactFront, ""))
+	verbose := text(t, successResult(verboseFront, ""))
+
+	// Anything the default form drops must be described as needing verbose.
+	for _, field := range []string{"cwd:", "log_path:", "size:"} {
+		if strings.Contains(compact, field) {
+			continue
+		}
+		if !strings.Contains(verbose, field) {
+			t.Errorf("%s appears in neither form; the description should not imply it exists", field)
+		}
+	}
+	if strings.Contains(compact, "cwd:") {
+		t.Error("the default list should not carry the working directory")
+	}
+}

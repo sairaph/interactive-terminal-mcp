@@ -463,9 +463,12 @@ func killBody(result ipc.KillResult) string {
 		parts = append(parts, fmt.Sprintf("Ended session %s with %s%s.", name, result.Signal, exitCodePhrase(result.ExitCode)))
 	}
 
-	if result.LogsRetained && result.LogPath != "" {
+	switch {
+	case result.LogsRetained && result.LogPath != "":
 		parts = append(parts, fmt.Sprintf("Its log is kept at `%s`.", result.LogPath))
-	} else if !result.LogsRetained {
+	case result.Purged:
+		parts = append(parts, "Its logs were deleted with it.")
+	case !result.LogsRetained:
 		parts = append(parts, "Its logs were deleted, because session logs are set to be removed when a session closes.")
 	}
 	return strings.Join(parts, "\n\n")
