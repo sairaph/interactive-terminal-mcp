@@ -128,7 +128,7 @@ while attached and restores the previous size on detach.
 
 ## MCP Surface
 
-Eight direct, typed tools. Every name is short and prefixed `it_`.
+Seven direct, typed tools. Every name is short and prefixed `it_`.
 
 | Tool | Purpose |
 |---|---|

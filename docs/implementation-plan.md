@@ -251,7 +251,7 @@ Startup recovery: session directories on disk whose processes are gone are
 loaded as `exited` records so `it_list`, `it_tail`, and `it_head` still work
 after a daemon restart. Their PTYs are not resurrected.
 
-### `internal/mcpserver` — the eight tools
+### `internal/mcpserver` — the tools
 
 Mirrors `apis-mcp/internal/mcpserver` exactly in shape:
 
@@ -507,7 +507,7 @@ Each milestone ends with a working, tested, committed binary.
 | 2 | **Terminal core** | `vterm` adapter and `session`: PTY spawn, emulator, snapshot extraction, settle, transcript and raw logs, exit capture, retention. Full unit + PTY tests. No MCP yet. |
 | 3 | **Keys** | `keys` parser and mode-aware encoder with the full table-driven suite. |
 | 4 | **Daemon + IPC** | Socket/named pipe, wire protocol, registry, autostart, singleton lock, retention sweeper, restart recovery, `daemon` and `doctor` commands. |
-| 5 | **MCP surface** | All eight tools, schemas, frontmatter, bodies, truncation, pagination, error contract. Golden-file tests. This is the first genuinely useful release — tag `v0.1.0`. |
+| 5 | **MCP surface** | Every tool, schemas, frontmatter, bodies, truncation, pagination, error contract. Golden-file tests. This is the first genuinely useful release — tag `v0.1.0`. |
 | 6 | **CLI one-shots** | `ls`, `new`, `send`, `read`, `tail`, `head`, `kill`, `attach`, human rendering. |
 | 7 | **Installer** | `detect-harness` integration, the configure TUI including the log-retention question, settings editor, restore defaults, `install.sh`, `install.ps1`. Tag `v0.2.0`. |
 | 8 | **Human application** | Session browser, attach/detach, resize handling, rename, kill, launch configure. Tag `v0.3.0`. |
@@ -563,8 +563,8 @@ agent-facing surface:
 2. **`enter` defaults to `true`.** `it_send({"text":"echo hi"})` runs the
    command, which matches the example in the brief, at the cost of a small
    piece of implicit behavior. `enter: false` opts out.
-3. **Resizing lives on `it_read`.** Rather than a ninth tool, `it_read` accepts
-   `cols`/`rows` and resizes before snapshotting. It keeps the surface at eight
+3. **Resizing lives on `it_read`.** Rather than an eighth tool, `it_read` accepts
+   `cols`/`rows` and resizes before snapshotting. It keeps the surface at seven
    tools and reads naturally, but it does put a mutation on a tool whose name
    suggests it only observes.
 
@@ -643,7 +643,7 @@ fallback is stable and per-user.
 | `session` | Real PTYs: input round trip, settle-early and settle-expired, exit capture, transcript vs alternate screen, resize reaching the child, kill and escalation, terminal queries, a full `vim` edit-and-save |
 | `daemon` | Two-process lifecycle over a real socket, every tool requiring an explicit session, kill requiring an explicit target, TERM escalation, INT leaving the session usable, name conflicts, typed errors, singleton locking |
 | `ipc` | Request/response matching under concurrency, typed errors across the wire, stale vs live socket handling, socket permissions, deadlines |
-| `mcpserver` | Golden-file assertions on every rendered document, plus an end-to-end run of all eight tools against a live daemon, including driving `less` with keys |
+| `mcpserver` | Golden-file assertions on every rendered document, plus an end-to-end run of every tool against a live daemon, including driving `less` with keys |
 | `budget` | Truncation direction, oversized records, pagination completeness |
 | `config` | Round-trip, validation, atomic restore, socket-path length |
 | `install` | `detect-harness` against fixture homes: registration, idempotency, removal, conflict reporting, uninstallable environments |
