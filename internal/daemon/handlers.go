@@ -547,13 +547,7 @@ func (d *Daemon) handleRename(args ipc.RenameArgs) (ipc.SessionInfo, error) {
 	if err := d.registry.nameAvailable(name, item.id()); err != nil {
 		return ipc.SessionInfo{}, err
 	}
-	if item.live != nil {
-		item.live.Rename(name)
-	} else {
-		d.registry.mu.Lock()
-		item.metadata.Name = name
-		d.registry.mu.Unlock()
-	}
+	d.registry.assignName(item, name)
 	return d.describeSession(item, d.registry.activeID()), nil
 }
 

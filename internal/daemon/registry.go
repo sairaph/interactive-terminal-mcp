@@ -53,6 +53,36 @@ func (e *entry) running() bool {
 	return e.live != nil && e.live.Running()
 }
 
+// clearName drops this entry's name and persists that, so a restarted daemon
+// does not restore a claim that has already been given up.
+func (e *entry) clearName() {
+	if e.live != nil {
+		e.live.Rename("")
+		return
+	}
+	e.metadata.Name = ""
+	if e.directory != "" {
+		// A failure here costs the persistence, not the correctness: the name
+		// is already gone in memory, and recover() dedupes on load anyway.
+		_ = session.WriteMetadata(e.directory, e.metadata)
+	}
+}
+
+// preferred reports whether left is the better answer when two entries compete.
+//
+// Running beats ended, then more recent activity, then id so the result never
+// depends on map iteration order.
+func preferred(left, right *entry) bool {
+	if left.running() != right.running() {
+		return left.running()
+	}
+	leftTime, rightTime := left.lastActivity(), right.lastActivity()
+	if !leftTime.Equal(rightTime) {
+		return leftTime.After(rightTime)
+	}
+	return left.id() < right.id()
+}
+
 func (e *entry) lastActivity() time.Time {
 	if e.live != nil {
 		return e.live.LastActivity()
@@ -122,6 +152,29 @@ func (r *registry) recover() {
 			metadata: metadata, directory: directory, retainedAt: retainedAt,
 		}
 	}
+	r.dedupeNamesLocked()
+}
+
+// dedupeNamesLocked leaves each name on one entry after a restore from disk.
+//
+// meta.json files are written independently, and a session that gave up its
+// name may never have been written again -- the daemon can be killed between
+// the two. Restoring blindly would bring the duplicate back, so uniqueness is
+// re-established here on the way in.
+func (r *registry) dedupeNamesLocked() {
+	best := make(map[string]*entry)
+	for _, candidate := range r.entries {
+		name := candidate.name()
+		if name == "" {
+			continue
+		}
+		if held, ok := best[name]; !ok || preferred(candidate, held) {
+			best[name] = candidate
+		}
+	}
+	for name, keep := range best {
+		r.releaseNameLocked(name, keep.id())
+	}
 }
 
 // resolve finds a session by id or name.
@@ -139,10 +192,23 @@ func (r *registry) resolve(reference string) (*entry, error) {
 	if found, ok := r.entries[reference]; ok {
 		return found, nil
 	}
+	// A name belongs to one session at a time, so this loop should find at
+	// most one match. It picks the best anyway rather than the first, because
+	// map iteration is in random order and entries restored from disk by a
+	// restarted daemon have not been through nameAvailable. Returning "the
+	// first one Go happened to visit" made a reused name resolve to a live
+	// session on one call and to a corpse on the next.
+	var best *entry
 	for _, candidate := range r.entries {
-		if candidate.name() != "" && candidate.name() == reference {
-			return candidate, nil
+		if candidate.name() == "" || candidate.name() != reference {
+			continue
 		}
+		if best == nil || preferred(candidate, best) {
+			best = candidate
+		}
+	}
+	if best != nil {
+		return best, nil
 	}
 	return nil, &ipc.Error{
 		Code:    ipc.CodeSessionNotFound,
@@ -227,6 +293,45 @@ func (r *registry) add(live *session.Session, directory string) {
 	defer r.mu.Unlock()
 	r.entries[live.ID()] = &entry{live: live, directory: directory}
 	r.active = live.ID()
+	// Only a running session can hold a name. Reusing the name of one that has
+	// ended is allowed on purpose -- naming each build "build" is the workflow
+	// the tools describe -- so the ended one gives the name up here rather than
+	// keeping a claim on it that nothing can resolve.
+	r.releaseNameLocked(live.Name(), live.ID())
+}
+
+// assignName gives a name to one session and takes it from any other holding
+// it, so renaming cannot create the duplicate that creating one cannot.
+func (r *registry) assignName(item *entry, name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if item.live != nil {
+		item.live.Rename(name)
+	} else {
+		item.metadata.Name = name
+		if item.directory != "" {
+			_ = session.WriteMetadata(item.directory, item.metadata)
+		}
+	}
+	r.releaseNameLocked(name, item.id())
+}
+
+// releaseNameLocked takes name away from every entry except keepID, so a name
+// identifies exactly one session.
+//
+// Uniqueness is enforced when the name is handed out rather than worked around
+// when it is looked up. Anything else leaves two sessions answering to one
+// name, and then every caller has to guess which one it reached.
+func (r *registry) releaseNameLocked(name, keepID string) {
+	if name == "" {
+		return
+	}
+	for _, candidate := range r.entries {
+		if candidate.id() == keepID || candidate.name() != name {
+			continue
+		}
+		candidate.clearName()
+	}
 }
 
 // remove deletes a session from the registry, returning its directory.
@@ -301,15 +406,7 @@ func (r *registry) list() []*entry {
 		entries = append(entries, candidate)
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
-		left, right := entries[i], entries[j]
-		if left.running() != right.running() {
-			return left.running()
-		}
-		leftTime, rightTime := left.lastActivity(), right.lastActivity()
-		if !leftTime.Equal(rightTime) {
-			return leftTime.After(rightTime)
-		}
-		return left.id() < right.id()
+		return preferred(entries[i], entries[j])
 	})
 	return entries
 }

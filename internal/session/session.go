@@ -230,7 +230,14 @@ func resolveCommand(options Options) (argv []string, shell Shell, usedShell bool
 		if lookErr != nil {
 			return nil, Shell{}, false, fmt.Errorf("command %q was not found on PATH", options.Argv[0])
 		}
-		return append([]string{resolved}, options.Argv[1:]...), Shell{}, false, nil
+		argv := append([]string{resolved}, options.Argv[1:]...)
+		// Running a shell by name is still running a shell. Saying so is what
+		// lets a caller know which syntax the session takes, and lets the
+		// foreground check treat it as a shell rather than as one long command.
+		if shell, ok := shellForProgram(argv); ok {
+			return argv, shell, true, nil
+		}
+		return argv, Shell{}, false, nil
 	}
 
 	chosen, err := ResolveShell(options.Shell)
@@ -702,6 +709,68 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 	}
 }
 
+// echoRule decides whether the target text on screen is a result or just the
+// terminal repeating what was typed.
+//
+// The hard part is that a command line is echoed a character at a time. An
+// earlier version tested whether the whole submitted line was on screen and,
+// if so, discounted the occurrences it contains. That left a window: while the
+// echo was still being drawn, the target could already be visible inside it
+// while the complete line was not, so the discount did not apply and the echo
+// counted as a result. A 6000-line command reported finished in 551ms, having
+// matched its own echo.
+//
+// The fix is to stop looking for the whole line. What is checked is the
+// witness: the input truncated at the end of its last occurrence of the
+// target. Since a terminal draws left to right, the witness is on screen
+// exactly when the target is on screen because of the echo, so there is no
+// moment where one is visible and the other is not. The window does not shrink
+// -- it stops existing.
+type echoRule struct {
+	needle   string
+	witness  string
+	echoed   int
+	baseline int
+}
+
+func newEchoRule(needle, echo string, baseline int) echoRule {
+	rule := echoRule{needle: needle, baseline: baseline}
+	if needle == "" || echo == "" {
+		return rule
+	}
+	last := strings.LastIndex(echo, needle)
+	if last < 0 {
+		// The input does not contain the target, so its echo can never be
+		// mistaken for one. Nothing needs discounting.
+		return rule
+	}
+	rule.echoed = strings.Count(echo, needle)
+	rule.witness = echo[:last+len(needle)]
+	return rule
+}
+
+// matches reports whether the screen holds an occurrence that is neither part
+// of the echo nor something that was already there.
+func (r echoRule) matches(screen string) bool {
+	if r.needle == "" {
+		return false
+	}
+	count := strings.Count(screen, r.needle)
+	if count == 0 {
+		return false
+	}
+	threshold := r.baseline
+	// Only discount the echo while it is still on the screen. Once output has
+	// pushed it off, its occurrences are no longer among those being counted,
+	// which is what lets a long-running command match its own final marker.
+	if r.echoed > 0 && strings.Contains(screen, r.witness) {
+		threshold += r.echoed
+	}
+	// Fewer occurrences than there were to begin with means the screen has
+	// scrolled past the baseline, so what is on it now arrived since.
+	return count > threshold || count < r.baseline
+}
+
 // WaitUntil blocks until the target text appears on the screen, the budget
 // expires, or the session exits.
 //
@@ -728,38 +797,18 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, ta
 
 	needle := flattenText(target.Text)
 	echo := flattenText(strings.TrimRight(target.Echo, "\r\n"))
-	// How many times the input that was just typed contains the target. Its
-	// echo will put exactly this many occurrences on the screen.
-	echoed := 0
-	if echo != "" && needle != "" {
-		echoed = strings.Count(echo, needle)
-	}
+	rule := newEchoRule(needle, echo, target.Baseline)
 
 	matched := func() bool {
-		screen := flattenLines(s.term.Snapshot().Lines)
-		count := strings.Count(screen, needle)
-		if count == 0 {
-			return false
-		}
-		threshold := target.Baseline
-		// Only discount the echo while it is still on the screen. Once it has
-		// scrolled away it is no longer among the occurrences being counted.
-		if echoed > 0 && strings.Contains(screen, echo) {
-			threshold += echoed
-		}
-		// Fewer occurrences than there were to begin with means the screen has
-		// scrolled past the baseline, so what is on it now arrived since.
-		return count > threshold || count < target.Baseline
+		return rule.matches(flattenLines(s.term.Snapshot().Lines))
 	}
 
-	// When the target also appears in the input just typed, the echo has to
-	// reach the screen before any count means anything: a command line painted
-	// one chunk at a time can show the word before it has shown the whole line,
-	// and the wait would end on its own echo. This delays only the first
-	// verdict, and never hides output, because output printed while waiting is
-	// still on the screen afterwards.
-	if echoed > 0 {
-		s.awaitEcho(ctx, echo, 300*time.Millisecond)
+	// Give the echo a moment to land before the first verdict. This is no
+	// longer what makes the count correct -- the rule below handles a
+	// half-drawn echo on its own -- but it keeps the common case from being
+	// decided on a screen that has not caught up yet.
+	if rule.echoed > 0 {
+		s.awaitEcho(ctx, rule.witness, 300*time.Millisecond)
 	}
 
 	deadline := time.After(budget)

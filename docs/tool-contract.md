@@ -328,6 +328,25 @@ No terminal sessions exist. Create one with `it_new({})`.
 |---|---:|---|
 | `name` | no | Stable name for the session. Generated id is used when omitted. |
 | `command` | no | String run through the login shell, or an argv array executed directly. Defaults to the user's shell. |
+
+### Names identify one session
+
+A name belongs to exactly one session. `it_new` rejects a name held by a
+*running* session with `name_conflict`, and accepts one whose holder has ended
+-- naming each build `build` is the intended workflow. The ended session gives
+the name up at that moment and keeps only its id, so a name never resolves to
+two sessions.
+
+That last part is load-bearing. While both held the name, every lookup had to
+choose between them, and the choice came out of map iteration order: the same
+`it_send({"session": "build"})` reached the live session on one call and the
+ended one on the next. `it_kill` inherited it and could report `already_ended`
+as a success while the live session kept running.
+
+Renaming applies the same rule, and a daemon restart re-establishes it across
+whatever it restores from disk.
+
+
 | `cwd` | no | Working directory. Defaults to the daemon's working directory. |
 | `env` | no | Extra environment variables merged over the inherited environment. |
 | `cols` | no | Terminal width; defaults to the configured `120`. |

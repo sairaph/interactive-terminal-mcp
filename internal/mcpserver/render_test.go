@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -976,5 +977,53 @@ func TestCompactListRowKeepsLogRetention(t *testing.T) {
 	rows := front.(listMetadata).Sessions
 	if len(rows) != 1 || !rows[0].LogsRetained {
 		t.Errorf("a running session's logs are retained, got %+v", rows)
+	}
+}
+
+// Page size differs between compact and verbose rows, so a continuation hint
+// that drops verbose points at a page that does not exist in the other mode.
+func TestPaginationHintKeepsVerbose(t *testing.T) {
+	sessions := make([]ipc.SessionInfo, 40)
+	for index := range sessions {
+		sessions[index] = ipc.SessionInfo{
+			ID: fmt.Sprintf("t-%06d", index), Running: true,
+			Cwd:     "/home/user/some/fairly/long/working/directory",
+			LogPath: "/home/user/.interactive-terminal-mcp/sessions/x/transcript.log",
+			Cols:    120, Rows: 30,
+		}
+	}
+	front, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 1500, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if front.(listMetadata).TotalPages < 2 {
+		t.Skip("the budget did not force a second page; the hint under test never appears")
+	}
+	if !strings.Contains(body, `"verbose":true`) {
+		t.Errorf("the continuation hint must stay in verbose mode:\n%s", body)
+	}
+}
+
+// A session started as a program rather than a shell says nothing about which
+// syntax it takes, so the suggestion has to be one that works everywhere.
+func TestUnknownShellExampleIsPortable(t *testing.T) {
+	if got := exampleCommand(ipc.SessionInfo{Shell: ""}); got != "echo hi" {
+		t.Errorf("unknown shell should get a portable example, got %q", got)
+	}
+}
+
+// it_list's hint had its own hard-coded POSIX example, so a Windows session
+// was told to run pwd no matter what exampleCommand said.
+func TestListHintUsesTheSessionsOwnSyntax(t *testing.T) {
+	sessions := []ipc.SessionInfo{{ID: "t-aaa111", Running: true, Shell: "Command Prompt"}}
+	_, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 4000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, `"pwd"`) {
+		t.Errorf("pwd is not a cmd command:\n%s", body)
+	}
+	if !strings.Contains(body, `"dir"`) {
+		t.Errorf("a cmd session should be offered dir:\n%s", body)
 	}
 }

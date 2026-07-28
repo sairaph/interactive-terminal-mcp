@@ -317,6 +317,14 @@ func ReadMetadata(directory string) (Metadata, error) {
 	return metadata, nil
 }
 
+// WriteMetadata publishes a session's meta.json without needing the session
+// itself, which is how a name can be taken away from one whose process is long
+// gone. The write is atomic, so a daemon that dies mid-update leaves the
+// previous file rather than a truncated one.
+func WriteMetadata(directory string, metadata Metadata) error {
+	return writeMetadataFile(filepath.Join(directory, "meta.json"), metadata)
+}
+
 // LogSlice is the result of reading part of a transcript.
 type LogSlice struct {
 	Lines []string

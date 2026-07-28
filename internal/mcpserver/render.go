@@ -261,7 +261,10 @@ func exampleCommand(info ipc.SessionInfo) string {
 	case strings.Contains(info.Shell, "Command Prompt"):
 		return "dir"
 	case info.Shell == "":
-		return "pwd"
+		// The session was started as a program rather than a shell, so nothing
+		// says which syntax it takes. echo is the one command spelled the same
+		// in cmd, PowerShell, and every POSIX shell.
+		return "echo hi"
 	default:
 		return "ls -la"
 	}
@@ -501,10 +504,22 @@ func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any
 		Active: result.Active, Verbose: verbose,
 		Retention: result.Retention, Sessions: window,
 	}
-	return front, listBody(front, window), nil
+	return front, listBody(front, window, result.Sessions), nil
 }
 
-func listBody(front listMetadata, window []listRow) string {
+// exampleFor picks a command line valid in the session with this id. The full
+// SessionInfo is needed because the compact row drops the shell, and a hint has
+// to be right in either mode.
+func exampleFor(sessions []ipc.SessionInfo, id string) string {
+	for _, info := range sessions {
+		if info.ID == id {
+			return exampleCommand(info)
+		}
+	}
+	return "echo hi"
+}
+
+func listBody(front listMetadata, window []listRow, sessions []ipc.SessionInfo) string {
 	var parts []string
 	switch {
 	case front.Total == 0:
@@ -543,7 +558,7 @@ func listBody(front listMetadata, window []listRow) string {
 		parts = append(parts, fmt.Sprintf(
 			"Read a session with `%s`, or type into it with `%s`.",
 			call("it_read", map[string]any{"session": running.ID}),
-			call("it_send", map[string]any{"session": running.ID, "text": "pwd"})))
+			call("it_send", map[string]any{"session": running.ID, "text": exampleFor(sessions, running.ID)})))
 	} else {
 		// The final screen outlives the process, but the log does not
 		// necessarily outlive the retention policy, so only offer it_tail
@@ -565,7 +580,15 @@ func listBody(front listMetadata, window []listRow) string {
 	}
 
 	if front.Page < front.TotalPages {
-		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("it_list", map[string]any{"page": front.Page + 1})))
+		// verbose has to travel with the page number. A verbose row is larger,
+		// so the two modes paginate differently, and "page 2" of one can be
+		// past the end of the other -- following this hint verbatim landed on
+		// an empty page.
+		next := map[string]any{"page": front.Page + 1}
+		if front.Verbose {
+			next["verbose"] = true
+		}
+		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("it_list", next)))
 	}
 	if !front.Verbose {
 		parts = append(parts, fmt.Sprintf(

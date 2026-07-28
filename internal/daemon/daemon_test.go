@@ -402,3 +402,97 @@ func TestSecondDaemonRefusesToStart(t *testing.T) {
 		t.Fatal("a second daemon should refuse to start")
 	}
 }
+
+// Reusing the name of a session that has ended is allowed on purpose: naming
+// each build "build" is the workflow the tools describe. What must not survive
+// is the old session's claim on the name. While both answered to it, lookups
+// picked whichever one Go's map iteration reached first, so the same call
+// alternated between the live session and the corpse.
+func TestAReusedNameBelongsToTheLiveSession(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var dead ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "build", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
+	if dead.Session.Running {
+		t.Fatal("the first session was supposed to exit immediately")
+	}
+
+	var live ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "build", Argv: []string{"sh"}, WaitMS: 1500}, &live)
+	if !live.Session.Running {
+		t.Fatal("the replacement session should be running")
+	}
+	if live.Session.ID == dead.Session.ID {
+		t.Fatal("the two sessions should be distinct")
+	}
+
+	// Repeated because the failure was a coin flip: one lookup proves nothing.
+	for attempt := 0; attempt < 12; attempt++ {
+		var got ipc.Screen
+		mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: "build"}, &got)
+		if got.Session.ID != live.Session.ID {
+			t.Fatalf("attempt %d resolved \"build\" to %s; the live session is %s",
+				attempt, got.Session.ID, live.Session.ID)
+		}
+	}
+
+	// The ended session keeps its id, so nothing becomes unreachable.
+	var byID ipc.Screen
+	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: dead.Session.ID}, &byID)
+	if byID.Session.ID != dead.Session.ID {
+		t.Errorf("the ended session should still be reachable by id, got %s", byID.Session.ID)
+	}
+	if byID.Session.Name != "" {
+		t.Errorf("the ended session should have given the name up, still has %q", byID.Session.Name)
+	}
+}
+
+// The same bug reached it_kill, where it was worse than a failed read: the
+// kill landed on the corpse, reported already_ended as a success, and left the
+// live session running while the caller believed it was gone.
+func TestKillingByAReusedNameEndsTheLiveSession(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var dead ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "server", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
+	var live ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "server", Argv: []string{"sh"}, WaitMS: 1500}, &live)
+
+	var result ipc.KillResult
+	mustCall(t, client, ipc.OpSessionKill, ipc.KillArgs{Session: "server", Signal: "KILL"}, &result)
+	if result.Killed != live.Session.ID {
+		t.Fatalf("kill hit %s, but the live session was %s", result.Killed, live.Session.ID)
+	}
+	if result.AlreadyGone {
+		t.Error("the live session was running; reporting it as already ended is a false success")
+	}
+}
+
+// A name given by rename must be taken from whoever held it before, or rename
+// becomes a way to create the duplicate that creating one cannot.
+func TestRenamingTakesTheNameFromAnEndedSession(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var dead ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew,
+		ipc.NewArgs{Name: "api", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
+	var live ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, WaitMS: 1500}, &live)
+
+	var renamed ipc.SessionInfo
+	mustCall(t, client, ipc.OpSessionRename,
+		ipc.RenameArgs{Session: live.Session.ID, Name: "api"}, &renamed)
+
+	for attempt := 0; attempt < 12; attempt++ {
+		var got ipc.Screen
+		mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: "api"}, &got)
+		if got.Session.ID != live.Session.ID {
+			t.Fatalf("attempt %d resolved \"api\" to %s; expected %s",
+				attempt, got.Session.ID, live.Session.ID)
+		}
+	}
+}
