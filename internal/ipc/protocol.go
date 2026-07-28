@@ -114,9 +114,21 @@ type Screen struct {
 	Cursor            [2]int      `json:"cursor"`
 	BlankLinesTrimmed int         `json:"blank_lines_trimmed"`
 	Settled           bool        `json:"settled"`
-	Matched           bool        `json:"matched,omitempty"`
-	WaitedFor         string      `json:"waited_for,omitempty"`
-	WaitedMS          int64       `json:"waited_ms"`
+	// Observed reports whether the wait was long enough to establish anything.
+	// A call that asked for no wait leaves it false, which is a different fact
+	// from having watched output and seen it still arriving.
+	Observed  bool   `json:"observed"`
+	Matched   bool   `json:"matched,omitempty"`
+	WaitedFor string `json:"waited_for,omitempty"`
+	WaitedMS  int64  `json:"waited_ms"`
+	// BudgetMS is the ceiling the wait was given, as distinct from how long it
+	// actually took.
+	BudgetMS int64 `json:"budget_ms,omitempty"`
+	// Busy reports that the terminal still has a command in the foreground.
+	// BusyKnown is false where that cannot be established, which is most of
+	// what a shell does inside itself.
+	Busy      bool `json:"busy,omitempty"`
+	BusyKnown bool `json:"busy_known,omitempty"`
 }
 
 // NewArgs creates a session.
@@ -249,6 +261,10 @@ type ActiveResult struct {
 type ListResult struct {
 	Active   string        `json:"active,omitempty"`
 	Sessions []SessionInfo `json:"sessions"`
+	// Retention is the configured log retention policy. It is on the wire
+	// because it decides when an ended session stops being listed at all,
+	// which is otherwise invisible to a caller watching sessions disappear.
+	Retention string `json:"retention,omitempty"`
 }
 
 // RenameArgs changes a session name.

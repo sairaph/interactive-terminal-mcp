@@ -144,8 +144,11 @@ func (s *Service) registerTools() {
 		Description: "Return the current screen of a terminal session. " +
 			"Use it to check on a command started earlier, or to see the current state of a full-screen program. " +
 			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
-			"prints as it works; a command that prints nothing looks finished immediately, and settled: true only ever " +
-			"means output was quiet. For output that has already scrolled past, use it_tail.",
+			"prints as it works; settled: true only ever means output was quiet, which is what a command that " +
+			"prints nothing looks like from the moment it starts. Prefer busy, which reports whether a command " +
+			"still holds the terminal: busy: true is proof one is running, busy: false is strong evidence that " +
+			"none is, and the field is absent where neither can be established. wait_for is exact. " +
+			"For output that has already scrolled past, use it_tail.",
 		InputSchema: readSchema(s.settings),
 	}, s.read)
 
@@ -220,13 +223,22 @@ func pageProperty() map[string]any {
 
 // waitForProperty is the only completion signal that does not rely on guessing
 // from output timing, so it is offered wherever a call can wait.
-func waitForProperty() map[string]any {
+//
+// typed distinguishes a call that puts input into the terminal from one that
+// only looks at it, because what counts as a match differs: the shell prints
+// back what it is given, and that echo is not a result.
+func waitForProperty(typed bool) map[string]any {
+	rule := "Text already on the screen counts, so the call returns at once if what you are waiting for is there."
+	if typed {
+		rule = "Neither text already on the screen nor the echo of the input this call types counts as a match, " +
+			"so waiting for a word your own command contains works as expected."
+	}
 	return map[string]any{
 		"type": "string",
 		"description": "End the wait as soon as this text appears on the screen. " +
 			"Use it when a command prints nothing while it works, or prints in bursts: waiting for something you " +
-			"know will appear, such as the shell prompt or a word the command finishes with, is exact, " +
-			"while quiet output only ever means quiet output. The reply reports matched.",
+			"know will appear, such as a word the command finishes with, is exact, " +
+			"while quiet output only ever means quiet output. " + rule + " The reply reports matched.",
 	}
 }
 
@@ -277,7 +289,7 @@ func newSchema(settings config.Config) map[string]any {
 	return objectSchema(map[string]any{
 		"name": stringProperty(
 			"Optional short name for the session, such as \"build\" or \"server\", usable in place of its id. " +
-				"1-64 characters: lowercase letters, digits, dots, underscores, hyphens."),
+				"1-64 characters, starting with a letter or digit: lowercase letters, digits, dots, underscores, hyphens."),
 		"command": map[string]any{
 			"oneOf": []any{
 				map[string]any{"type": "string"},
@@ -298,7 +310,7 @@ func newSchema(settings config.Config) map[string]any {
 		"cols":     colsProperty(settings),
 		"rows":     rowsProperty(settings),
 		"wait":     waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
-		"wait_for": waitForProperty(),
+		"wait_for": waitForProperty(false),
 	})
 }
 
@@ -349,7 +361,7 @@ func readSchema(settings config.Config) map[string]any {
 			"description": "Resize the terminal to this height before capturing.",
 		},
 		"wait":     waitProperty(settings, 0, "Useful for a command that prints as it works."),
-		"wait_for": waitForProperty(),
+		"wait_for": waitForProperty(false),
 	})
 }
 
@@ -370,7 +382,7 @@ func sendSchema(settings config.Config) map[string]any {
 			"description": "Append Enter after text, submitting it. Set false to fill in a prompt without submitting.",
 		},
 		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a command you expect to take a while."),
-		"wait_for": waitForProperty(),
+		"wait_for": waitForProperty(true),
 	})
 }
 
@@ -382,6 +394,8 @@ func killSchema() map[string]any {
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
 				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
 				"and the reply says whether the command stopped. " +
+				"HUP reports the terminal as closed and ends the session, escalating to KILL like TERM; " +
+				"use it for a program that treats a lost terminal differently from a request to quit. " +
 				"KILL ends the session immediately and cannot be refused.",
 		},
 	}, "session")
@@ -404,7 +418,9 @@ func logSchema(tail bool) map[string]any {
 	if tail {
 		properties["screen"] = map[string]any{
 			"type": "boolean", "default": true,
-			"description": "Also return the live screen after the log lines. Keep it on for a session running a full-screen program, whose output never reaches the log.",
+			"description": "Also return the live screen after the log lines. Keep it on: the log holds only what has " +
+				"scrolled off, so with this off the \"most recent lines\" returned stop where the visible screen begins " +
+				"and the newest output is missing. It matters most for a full-screen program, whose output never reaches the log at all.",
 		}
 	}
 	return objectSchema(properties)

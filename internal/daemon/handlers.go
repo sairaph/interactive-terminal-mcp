@@ -31,7 +31,11 @@ func (d *Daemon) handleList() (ipc.ListResult, error) {
 	for _, item := range entries {
 		sessions = append(sessions, d.describeSession(item, active))
 	}
-	return ipc.ListResult{Active: active, Sessions: sessions}, nil
+	return ipc.ListResult{
+		Active:    active,
+		Sessions:  sessions,
+		Retention: d.registry.settingsSnapshot().LogRetention,
+	}, nil
 }
 
 func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, error) {
@@ -92,7 +96,9 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	d.registry.add(live, directory)
 	d.touch()
 
-	settled := d.wait(ctx, live, args.WaitMS, args.WaitFor, settings)
+	// A new session starts with an empty screen and nothing is typed into it,
+	// so there is neither a baseline nor an echo to discount.
+	settled := d.wait(ctx, live, args.WaitMS, session.WaitTarget{Text: args.WaitFor}, settings)
 	screen := d.screen(live, settled)
 	screen.WaitedFor = args.WaitFor
 	return screen, nil
@@ -130,7 +136,9 @@ func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen,
 		}
 	}
 
-	settled := d.wait(ctx, item.live, args.WaitMS, args.WaitFor, settings)
+	// it_read writes nothing, so text already on the screen is exactly what the
+	// caller is asking about and matches at once.
+	settled := d.wait(ctx, item.live, args.WaitMS, session.WaitTarget{Text: args.WaitFor}, settings)
 	screen := d.screen(item.live, settled)
 	screen.WaitedFor = args.WaitFor
 	return screen, nil
@@ -161,6 +169,15 @@ func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen,
 		chords = parsed
 	}
 
+	// The baseline is taken before anything is written. Text already on the
+	// screen is not a result of this call, and reading the count afterwards
+	// would fold the output of a fast command into the baseline and then wait
+	// for it forever.
+	target := session.WaitTarget{Text: args.WaitFor, Echo: args.Text}
+	if target.Wanted() {
+		target.Baseline = live.CountOnScreen(args.WaitFor)
+	}
+
 	if args.HasText {
 		if err := writeText(live, args.Text, args.Enter); err != nil {
 			return ipc.Screen{}, sendError(err, item)
@@ -173,7 +190,7 @@ func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen,
 		}
 	}
 
-	settled := d.wait(ctx, live, args.WaitMS, args.WaitFor, settings)
+	settled := d.wait(ctx, live, args.WaitMS, target, settings)
 	screen := d.screen(live, settled)
 	screen.WaitedFor = args.WaitFor
 	return screen, nil
@@ -181,10 +198,10 @@ func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen,
 
 // wait blocks for the caller, using the exact signal when one was given and
 // falling back to watching output when it was not.
-func (d *Daemon) wait(ctx context.Context, live *session.Session, waitMS int64, waitFor string, settings config.Config) session.SettleResult {
+func (d *Daemon) wait(ctx context.Context, live *session.Session, waitMS int64, target session.WaitTarget, settings config.Config) session.SettleResult {
 	budget := time.Duration(waitMS) * time.Millisecond
-	if waitFor != "" {
-		return live.WaitUntil(ctx, budget, settings.SettleQuiet, waitFor)
+	if target.Wanted() {
+		return live.WaitUntil(ctx, budget, settings.SettleQuiet, target)
 	}
 	return live.WaitSettled(ctx, budget, settings.SettleQuiet)
 }
@@ -514,7 +531,10 @@ func (d *Daemon) screenFor(ctx context.Context, item *entry) (ipc.Screen, error)
 		return ipc.Screen{Session: d.describeSession(item, d.registry.activeID())}, nil
 	}
 	settings := d.registry.settingsSnapshot()
-	settled := item.live.WaitSettled(ctx, 0, settings.SettleQuiet)
+	// Long enough to observe a quiet window, so the reply can say whether
+	// output had stopped rather than that it never looked. The wait is a
+	// ceiling, so an idle session still returns as soon as it is quiet.
+	settled := item.live.WaitSettled(ctx, settings.SettleQuiet*4, settings.SettleQuiet)
 	return d.screen(item.live, settled), nil
 }
 
@@ -593,14 +613,23 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 	}
 	d.registry.mu.RUnlock()
 
+	// Whether a command is still in the foreground is the one hard fact
+	// available about completion, so it is sampled at snapshot time and
+	// reported rather than inferred from output timing downstream.
+	busy, busyKnown := live.CommandBusy()
+
 	return ipc.Screen{
 		Session:           d.describeSession(item, d.registry.activeID()),
 		Lines:             snapshot.Lines,
 		Cursor:            snapshot.Cursor,
 		BlankLinesTrimmed: snapshot.BlankLinesTrimmed,
 		Settled:           settled.Settled,
+		Observed:          settled.Observed,
 		Matched:           settled.Matched,
 		WaitedMS:          settled.Waited.Milliseconds(),
+		BudgetMS:          settled.Budget.Milliseconds(),
+		Busy:              busy,
+		BusyKnown:         busyKnown,
 	}
 }
 

@@ -181,6 +181,7 @@ cursor: [12, 41]
 alt_screen: false
 title: make -j8
 settled: true
+busy: false
 waited_ms: 820
 last_activity_at: 2026-07-27T09:31:44Z
 blank_lines_trimmed: 17
@@ -191,8 +192,10 @@ blank_lines_trimmed: 17
 | `cursor` | One-based `[row, column]` of the cursor on the visible screen |
 | `alt_screen` | True while a full-screen program owns the alternate buffer |
 | `title` | Last title set by the program through OSC 0/2, when any |
-| `settled` | Output stopped changing before the wait budget expired |
+| `settled` | Output stopped changing before the wait budget expired. Absent when the call did not wait long enough to establish anything |
+| `busy` | A command still holds the terminal. Absent where that cannot be established |
 | `waited_ms` | Milliseconds actually spent waiting |
+| `logs_retained` | Whether this session's log survives the session ending |
 | `exit_code` | Present only once the session has exited |
 
 ### Waiting
@@ -206,10 +209,42 @@ produced no new output for the settle interval (250 ms by default), or when
 
 `settled: false` in the frontmatter means the wait budget expired while output
 was still arriving. The body then tells the agent to call `it_read` again with
-a longer wait rather than assuming the command finished.
+a longer wait rather than assuming the command finished. When the call did not
+wait long enough to observe anything either way, the field is absent rather
+than false: nothing was looked at, which is not the same as having looked and
+seen output still coming.
 
 This makes `it_send({"text": "ls", "wait": 5})` cheap for a fast command and
 correct for a slow one, without the agent having to guess a duration.
+
+### Knowing whether a command has finished
+
+`settled` answers a question about output, not about completion. A command that
+prints nothing is quiet from the moment it starts, so quiet is the weakest of
+the three signals a reply carries.
+
+`busy` is stronger and comes from the terminal rather than from timing: it
+reports whether the foreground of the terminal has been handed to something
+other than the shell. `busy: true` is proof a command is running. `busy: false`
+means no separate command holds the terminal, which is an idle prompt nearly
+always and occasionally the shell working inside itself, as a `while` loop
+does. Where neither can be established the field is absent and the reply claims
+nothing.
+
+`wait_for` is exact. The wait ends the moment the given text appears, and what
+counts as an appearance is defined rather than guessed:
+
+- Text already on the screen when a call that types nothing begins (`it_read`)
+  is a match, because that call is asking whether the text is there.
+- Text already on the screen before `it_send` types its input is not a match.
+  It was not produced by this call.
+- The echo of the input `it_send` types is not a match either, which is what
+  makes `it_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` work.
+  The occurrences the typed line itself contains are discounted, so the wait
+  ends on the output rather than on the command line.
+
+Nothing is excluded on the basis of when it arrived, so a command that finishes
+in a millisecond is matched exactly as a slow one is.
 
 ### `it_active`
 
@@ -434,13 +469,20 @@ log_path: null
 `on_close` policy the session directory is deleted immediately and `log_path`
 is null; under any other policy the path stays valid until retention expires.
 
+The same policy decides how long a session stays listed at all. Under
+`on_close` an ended session leaves `it_list` as soon as it ends, because there
+is nothing left to point at; `it_list` carries the policy as `retention` and
+says so in its body, since a session quietly disappearing otherwise looks like
+data loss. Under a retention window ended sessions stay listed until it
+expires.
+
 ### `it_tail` and `it_head`
 
 | Argument | Required | Meaning |
 |---|---:|---|
 | `session` | no | Session to read. Defaults to the active session. |
 | `lines` | no | Lines requested; defaults to `100`, maximum `5000`. |
-| `screen` | no | `it_tail` only. Append the live screen after the log lines. Defaults to `true`. |
+| `screen` | no | `it_tail` only. Append the live screen after the log lines. Defaults to `true`, and should stay on: the log holds only what has scrolled off, so with it off the newest output is missing entirely. |
 
 `it_tail` returns the last `lines` lines of the session transcript, `it_head`
 the first `lines` lines. Both read the durable on-disk transcript, so they

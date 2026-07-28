@@ -440,22 +440,24 @@ func (s *Session) startedShell() bool {
 	return s.metadata.Shell
 }
 
-// CommandBusy reports whether the terminal definitely has a command running.
+// CommandBusy reports whether a command is running in the terminal, and
+// whether that could be established at all.
 //
-// True is proof. False is not: a shell loop such as `while :; do ...; done`
-// executes inside the shell process itself, so the terminal's foreground group
-// never leaves the shell even though a command is very much running. Treating
-// that as "finished" is exactly how an interrupt a program ignored came to be
-// reported as successful.
-func (s *Session) CommandBusy() (busy bool, proven bool) {
+// The two results are not equally strong, and callers are expected to treat
+// them differently. True is proof: the terminal has handed the foreground to
+// something that is not the shell. False means no separate command holds the
+// terminal, which is an idle prompt nearly always and the shell working on its
+// own occasionally -- a loop such as `while :; do ...; done` runs inside the
+// shell process itself and never takes the foreground. So false is good
+// evidence of finished and not proof of it, which is why anything built on it
+// says "most likely" rather than asserting.
+//
+// Where neither can be established, known is false and nothing is claimed.
+func (s *Session) CommandBusy() (busy bool, known bool) {
 	if !s.Running() {
 		return false, true
 	}
-	busy, known := s.foregroundBusy()
-	if !known || !busy {
-		return false, false
-	}
-	return true, true
+	return s.foregroundBusy()
 }
 
 // OutputBytes reports how many bytes the child has written since it started.
@@ -568,10 +570,63 @@ type SettleResult struct {
 	// Settled is true when output stopped changing before the budget expired.
 	// False tells the agent the screen may still be in flux.
 	Settled bool
+	// Observed is true when the wait was long enough to reach a verdict either
+	// way. A caller that asked for no wait gets Settled: false and Observed:
+	// false, which are different facts: nothing was seen, rather than something
+	// was seen still arriving.
+	Observed bool
 	// Waited is how long the wait actually took.
 	Waited time.Duration
+	// Budget is the ceiling the wait was given, which is not the same as the
+	// time it took. Reporting the elapsed time as though it were the ceiling
+	// made a 30ms early return read as a 30ms limit.
+	Budget time.Duration
 	// Exited is true when the session ended during the wait.
 	Exited bool
+}
+
+// WaitTarget describes an exact wait for text to appear on the screen.
+type WaitTarget struct {
+	// Text is what to wait for.
+	Text string
+
+	// Echo is input that was just written to the terminal and that the shell
+	// will print back. Occurrences of Text inside it are discounted, so waiting
+	// for a word the command itself contains does not match the instant the
+	// command is typed.
+	Echo string
+
+	// Baseline is how many times Text was already on the screen before that
+	// input was written. Anything that was already there is not a result.
+	Baseline int
+}
+
+// Wanted reports whether an exact wait was asked for.
+func (t WaitTarget) Wanted() bool { return t.Text != "" }
+
+// flattenLines joins screen rows into one string.
+//
+// Matching runs against the flattened screen so that text the terminal wrapped
+// across two rows still counts. Rows have no trailing whitespace, so joining
+// without a separator reconstructs a wrapped word exactly.
+func flattenLines(lines []string) string { return strings.Join(lines, "") }
+
+// flattenText removes line breaks from a needle so it can be matched against
+// the flattened screen.
+func flattenText(text string) string {
+	return strings.NewReplacer("\r\n", "", "\r", "", "\n", "").Replace(text)
+}
+
+// CountOnScreen reports how many times text appears on the visible screen.
+//
+// Callers use it to take a baseline before writing input, so that output which
+// was already on the screen is never mistaken for a result.
+func (s *Session) CountOnScreen(text string) int {
+	needle := flattenText(text)
+	if needle == "" {
+		return 0
+	}
+	return strings.Count(flattenLines(s.term.Snapshot().Lines), needle)
 }
 
 // WaitSettled blocks until the session has produced no output for quiet, or
@@ -594,6 +649,9 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 		case <-time.After(coalesce):
 		case <-ctx.Done():
 		}
+		// Nothing was waited for, so nothing was established. Observed stays
+		// false to keep this apart from a wait that ran and saw output still
+		// arriving.
 		return SettleResult{Settled: false, Waited: time.Since(start), Exited: !s.Running()}
 	}
 
@@ -612,10 +670,13 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 		select {
 		case <-ctx.Done():
 			quietTimer.Stop()
-			return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+			return SettleResult{Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		case <-deadline:
 			quietTimer.Stop()
-			return SettleResult{Settled: false, Waited: time.Since(start), Exited: !s.Running()}
+			// The budget ran out with output still coming. That is a real
+			// observation: the screen may well be incomplete.
+			return SettleResult{Settled: false, Observed: true,
+				Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		case <-s.processDone:
 			quietTimer.Stop()
 			// Let the reaper append the final screen before returning.
@@ -623,7 +684,8 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 			case <-time.After(coalesce):
 			case <-ctx.Done():
 			}
-			return SettleResult{Settled: true, Waited: time.Since(start), Exited: true}
+			return SettleResult{Settled: true, Observed: true,
+				Waited: time.Since(start), Budget: budget, Exited: true}
 		case <-activity:
 			quietTimer.Stop()
 			// Output arrived; restart the quiet window.
@@ -634,25 +696,29 @@ func (s *Session) WaitSettled(ctx context.Context, budget, quiet time.Duration) 
 				// reporting a blank screen as a finished one.
 				continue
 			}
-			return SettleResult{Settled: true, Waited: time.Since(start), Exited: !s.Running()}
+			return SettleResult{Settled: true, Observed: true,
+				Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		}
 	}
 }
 
-// WaitUntil blocks until text appears on the screen, the budget expires, or
-// the session exits.
+// WaitUntil blocks until the target text appears on the screen, the budget
+// expires, or the session exits.
 //
 // This exists because quiet is a poor proxy for finished. A command that
 // prints nothing looks complete the instant it starts, and one that prints
 // periodically looks complete between lines. Waiting for something the caller
 // knows will appear -- a prompt, a word the command ends with -- is exact.
 //
-// What is counted is a new occurrence, not any occurrence. The terminal echoes
-// the command as it is typed, so waiting for a word that command contains
-// would otherwise match the echo instantly and report a command finished
-// before it had started.
-func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, text string) SettleResult {
-	if text == "" {
+// Two things on the screen are not results, and both are excluded by counting
+// rather than by waiting. Text that was already there before the input was
+// written is held in target.Baseline. Text the terminal echoes back as the
+// command is typed is accounted for by discounting the occurrences the input
+// itself contains, which is what makes waiting for a word inside the command
+// work. Nothing is excluded on the basis of when it arrived, so a command that
+// finishes in a millisecond is matched just as a slow one is.
+func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, target WaitTarget) SettleResult {
+	if !target.Wanted() {
 		return s.WaitSettled(ctx, budget, quiet)
 	}
 	start := time.Now()
@@ -660,38 +726,57 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, te
 		budget = 30 * time.Second
 	}
 
-	// Let the echo of whatever was just typed reach the screen before counting,
-	// so it is part of the baseline rather than mistaken for the result.
-	const echoGrace = 250 * time.Millisecond
-	select {
-	case <-ctx.Done():
-		return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
-	case <-time.After(echoGrace):
-	case <-s.processDone:
+	needle := flattenText(target.Text)
+	echo := flattenText(strings.TrimRight(target.Echo, "\r\n"))
+	// How many times the input that was just typed contains the target. Its
+	// echo will put exactly this many occurrences on the screen.
+	echoed := 0
+	if echo != "" && needle != "" {
+		echoed = strings.Count(echo, needle)
 	}
-	baseline := strings.Count(s.term.Snapshot().Text(), text)
-
-	deadline := time.After(budget)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 
 	matched := func() bool {
-		current := strings.Count(s.term.Snapshot().Text(), text)
-		// A greater count means it appeared again. A smaller one means the
-		// screen scrolled past the baseline, so any occurrence now is new.
-		return current > baseline || (current > 0 && current < baseline)
+		screen := flattenLines(s.term.Snapshot().Lines)
+		count := strings.Count(screen, needle)
+		if count == 0 {
+			return false
+		}
+		threshold := target.Baseline
+		// Only discount the echo while it is still on the screen. Once it has
+		// scrolled away it is no longer among the occurrences being counted.
+		if echoed > 0 && strings.Contains(screen, echo) {
+			threshold += echoed
+		}
+		// Fewer occurrences than there were to begin with means the screen has
+		// scrolled past the baseline, so what is on it now arrived since.
+		return count > threshold || count < target.Baseline
 	}
+
+	// When the target also appears in the input just typed, the echo has to
+	// reach the screen before any count means anything: a command line painted
+	// one chunk at a time can show the word before it has shown the whole line,
+	// and the wait would end on its own echo. This delays only the first
+	// verdict, and never hides output, because output printed while waiting is
+	// still on the screen afterwards.
+	if echoed > 0 {
+		s.awaitEcho(ctx, echo, 300*time.Millisecond)
+	}
+
+	deadline := time.After(budget)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		if matched() {
-			return SettleResult{Settled: true, Matched: true,
-				Waited: time.Since(start), Exited: !s.Running()}
+			return SettleResult{Settled: true, Observed: true, Matched: true,
+				Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		}
 		select {
 		case <-ctx.Done():
-			return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+			return SettleResult{Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		case <-deadline:
-			return SettleResult{Waited: time.Since(start), Exited: !s.Running()}
+			return SettleResult{Observed: true,
+				Waited: time.Since(start), Budget: budget, Exited: !s.Running()}
 		case <-s.processDone:
 			// The session ended. Give the final screen a moment to land, then
 			// report whether the text ever arrived.
@@ -699,8 +784,30 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, te
 			case <-time.After(150 * time.Millisecond):
 			case <-ctx.Done():
 			}
-			return SettleResult{Settled: true, Matched: matched(),
-				Waited: time.Since(start), Exited: true}
+			return SettleResult{Settled: true, Observed: true, Matched: matched(),
+				Waited: time.Since(start), Budget: budget, Exited: true}
+		case <-ticker.C:
+		}
+	}
+}
+
+// awaitEcho waits for input just written to appear on the screen, giving up
+// after limit so a program that does not echo cannot stall the caller.
+func (s *Session) awaitEcho(ctx context.Context, echo string, limit time.Duration) {
+	deadline := time.After(limit)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if strings.Contains(flattenLines(s.term.Snapshot().Lines), echo) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			return
+		case <-s.processDone:
+			return
 		case <-ticker.C:
 		}
 	}

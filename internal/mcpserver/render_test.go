@@ -51,7 +51,7 @@ func TestScreenResultShape(t *testing.T) {
 	screen := ipc.Screen{
 		Session: sampleSession(),
 		Lines:   []string{"lael@host:~/project$ make", "  CC   src/parser.o"},
-		Cursor:  [2]int{3, 1}, Settled: true, WaitedMS: 820,
+		Cursor:  [2]int{3, 1}, Settled: true, Observed: true, WaitedMS: 820,
 	}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
 	requireDocument(t, body)
@@ -59,6 +59,7 @@ func TestScreenResultShape(t *testing.T) {
 	for _, want := range []string{
 		"session: t-k3f9qa", "name: build", "running: true",
 		"size: [120, 30]", "cursor: [3, 1]", "settled: true", "waited_ms: 820",
+		"logs_retained: true",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("frontmatter missing %q:\n%s", want, body)
@@ -69,7 +70,7 @@ func TestScreenResultShape(t *testing.T) {
 	}
 	// The agent must be told that history exists above the visible screen,
 	// otherwise it has no way to know 1842 lines scrolled past.
-	if !strings.Contains(body, "1842 earlier lines have scrolled off") {
+	if !strings.Contains(body, "1842 earlier lines from above this screen") {
 		t.Errorf("missing the scrollback pointer:\n%s", body)
 	}
 }
@@ -80,7 +81,8 @@ func TestUnsettledScreenWarnsAndOffersARetry(t *testing.T) {
 	screen := ipc.Screen{
 		Session: sampleSession(),
 		Lines:   []string{"  CC   src/render.o"},
-		Cursor:  [2]int{1, 1}, Settled: false, WaitedMS: 5000,
+		Cursor:  [2]int{1, 1}, Settled: false, Observed: true,
+		WaitedMS: 5000, BudgetMS: 10000,
 	}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
 
@@ -100,7 +102,7 @@ func TestUnsettledScreenWarnsAndOffersARetry(t *testing.T) {
 func TestAlternateScreenGuidance(t *testing.T) {
 	info := sampleSession()
 	info.AltScreen = true
-	screen := ipc.Screen{Session: info, Lines: []string{"-- INSERT --"}, Settled: true}
+	screen := ipc.Screen{Session: info, Lines: []string{"-- INSERT --"}, Settled: true, Observed: true}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
 
 	if !strings.Contains(body, "alt_screen: true") {
@@ -123,7 +125,7 @@ func TestEndedSessionWithNoLogDoesNotSuggestTail(t *testing.T) {
 	info.ExitCode = &code
 	info.TranscriptLines = 0
 
-	screen := ipc.Screen{Session: info, Lines: []string{}, Settled: true}
+	screen := ipc.Screen{Session: info, Lines: []string{}, Settled: true, Observed: true}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, sendGuidance(screen))))
 
 	if strings.Contains(body, "it_tail") {
@@ -143,7 +145,7 @@ func TestEndedSessionWithLogSuggestsTail(t *testing.T) {
 	code := 1
 	info.ExitCode = &code
 
-	screen := ipc.Screen{Session: info, Lines: []string{"make: *** Error 1"}, Settled: true}
+	screen := ipc.Screen{Session: info, Lines: []string{"make: *** Error 1"}, Settled: true, Observed: true}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, sendGuidance(screen))))
 
 	if !strings.Contains(body, "exit_code: 1") {
@@ -180,14 +182,19 @@ func TestNoActiveSessionGuidance(t *testing.T) {
 	}
 
 	// When every session is dead, selecting one is useless advice: nothing can
-	// be run in it. Reading its output is the only thing left to do.
+	// be run in it. What is left is finding out what they left behind, which
+	// it_list answers -- including whether the logs still exist, which under
+	// the default retention policy they do not.
 	allDead := ipc.ActiveResult{LiveSessions: 0, TotalSessions: 11}
 	body = text(t, successResult(noActiveFront(allDead), noActiveBody(allDead)))
 	if strings.Contains(body, "it_active({") {
 		t.Errorf("selecting a dead session is not a useful next step:\n%s", body)
 	}
-	if !strings.Contains(body, "it_tail") || !strings.Contains(body, "it_new") {
-		t.Errorf("body should offer reading the output or starting fresh:\n%s", body)
+	if strings.Contains(body, "it_tail") {
+		t.Errorf("their logs may already have been deleted; do not promise them:\n%s", body)
+	}
+	if !strings.Contains(body, "it_list") || !strings.Contains(body, "it_new") {
+		t.Errorf("body should offer to see what is left or start fresh:\n%s", body)
 	}
 }
 
@@ -197,7 +204,7 @@ func TestNoActiveSessionGuidance(t *testing.T) {
 func TestNewReportsWhenItLostTheActiveSlot(t *testing.T) {
 	info := sampleSession()
 	info.Active = false
-	screen := ipc.Screen{Session: info, Lines: []string{"$"}, Settled: true}
+	screen := ipc.Screen{Session: info, Lines: []string{"$"}, Settled: true, Observed: true}
 	body := screenBody(screen, newGuidance(screen))
 
 	if strings.Contains(body, "is active.") {
@@ -442,7 +449,7 @@ func TestFencesSurviveHostileOutput(t *testing.T) {
 	screen := ipc.Screen{
 		Session: sampleSession(),
 		Lines:   []string{"~~~", "~~~~~ not a real fence", "still inside"},
-		Settled: true,
+		Settled: true, Observed: true,
 	}
 	body := screenBody(screen, nil)
 	if !strings.Contains(body, "~~~~~~text\n") {
@@ -710,5 +717,264 @@ func TestListDescriptionMatchesWhatListReturns(t *testing.T) {
 	}
 	if strings.Contains(compact, "cwd:") {
 		t.Error("the default list should not carry the working directory")
+	}
+}
+
+// --- what the wait actually established ------------------------------------
+
+// A quiet screen and a finished command look identical. Where the terminal can
+// tell them apart, the reply has to say which one this is: reporting quiet as
+// finished is what made a caller stop reading a command that was still going.
+func TestBusyTerminalIsReportedDespiteQuietOutput(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(),
+		Lines:   []string{"lael@host:~/project$ sleep 15"},
+		Settled: true, Observed: true, WaitedMS: 300, BudgetMS: 5000,
+		Busy: true, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if !strings.Contains(body, "busy: true") {
+		t.Errorf("frontmatter should report the terminal as busy:\n%s", body)
+	}
+	if !strings.Contains(body, "A command is still running in this terminal") {
+		t.Errorf("a quiet screen over a running command must say so:\n%s", body)
+	}
+}
+
+// An idle shell is the one case where quiet really does mean finished, and
+// saying so is what makes the busy field worth reading at all.
+func TestIdleTerminalIsReportedWithoutAWarning(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(),
+		Lines:   []string{"lael@host:~/project$"},
+		Settled: true, Observed: true, WaitedMS: 260, BudgetMS: 5000,
+		Busy: false, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if !strings.Contains(body, "busy: false") {
+		t.Errorf("frontmatter should report the terminal as idle:\n%s", body)
+	}
+	if strings.Contains(body, "still running") {
+		t.Errorf("an idle terminal must not be described as running something:\n%s", body)
+	}
+}
+
+// A full-screen program is always the foreground process, so reporting it as a
+// running command would be true and useless on every single read.
+func TestBusyIsNotReportedForAFullScreenProgram(t *testing.T) {
+	info := sampleSession()
+	info.AltScreen = true
+	screen := ipc.Screen{
+		Session: info, Lines: []string{"-- INSERT --"},
+		Settled: true, Observed: true, Busy: true, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "busy:") {
+		t.Errorf("a full-screen program is not a command that will finish:\n%s", body)
+	}
+}
+
+// A call that did not wait established nothing. Reporting that as "output was
+// still arriving" states the opposite of what happened.
+func TestAnUnobservedScreenSaysNothingWasWaitedFor(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(),
+		Lines:   []string{"lael@host:~/project$"},
+		Settled: false, Observed: false, WaitedMS: 30,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "settled:") {
+		t.Errorf("nothing was established, so settled must be absent rather than false:\n%s", body)
+	}
+	if strings.Contains(body, "still arriving") {
+		t.Errorf("no wait ran, so nothing was seen arriving:\n%s", body)
+	}
+	if !strings.Contains(body, "captured without waiting") {
+		t.Errorf("the reply should say no wait ran:\n%s", body)
+	}
+}
+
+// A wait_for that timed out over an idle terminal means the command finished
+// without printing that text, which is the opposite of what this used to claim.
+func TestWaitForMissOverAnIdleTerminalDoesNotClaimTheCommandIsRunning(t *testing.T) {
+	screen := ipc.Screen{
+		Session:   sampleSession(),
+		Lines:     []string{"lael@host:~/project$ ./build.sh", "done", "lael@host:~/project$"},
+		Settled:   false,
+		Observed:  true,
+		WaitedFor: "BULK-DONE", Matched: false,
+		WaitedMS: 30300, BudgetMS: 30000,
+		Busy: false, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "still going") || strings.Contains(body, "still running") {
+		t.Errorf("an idle terminal must not be reported as still working:\n%s", body)
+	}
+	if !strings.Contains(body, "most likely finished") {
+		t.Errorf("the reply should say the command has probably finished:\n%s", body)
+	}
+}
+
+// The same miss over a terminal that demonstrably still has work in it is the
+// case where waiting again is the right advice.
+func TestWaitForMissOverABusyTerminalSaysToKeepWaiting(t *testing.T) {
+	screen := ipc.Screen{
+		Session:   sampleSession(),
+		Lines:     []string{"lael@host:~/project$ ./build.sh"},
+		Observed:  true,
+		WaitedFor: "BULK-DONE", Matched: false,
+		WaitedMS: 30300, BudgetMS: 30000,
+		Busy: true, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if !strings.Contains(body, "a command is still running in this terminal") {
+		t.Errorf("a proven-busy terminal should be reported as such:\n%s", body)
+	}
+	if !strings.Contains(body, `"wait_for":"BULK-DONE"`) {
+		t.Errorf("the reply should offer to keep waiting:\n%s", body)
+	}
+}
+
+// --- guidance that matches the state it is describing -----------------------
+
+// Suggesting it_send on a session this same reply reports as ended costs a
+// round trip to be told what the caller already knew.
+func TestListDoesNotSuggestTypingIntoEndedSessions(t *testing.T) {
+	code := 0
+	sessions := []ipc.SessionInfo{
+		{ID: "t-aaa111", Running: false, ExitCode: &code},
+		{ID: "t-bbb222", Running: false, ExitCode: &code},
+	}
+	_, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "it_send") {
+		t.Errorf("nothing here can be typed into:\n%s", body)
+	}
+	if !strings.Contains(body, "it_new") {
+		t.Errorf("the caller needs a way forward:\n%s", body)
+	}
+}
+
+// With a mix, the suggestion has to name one that is actually running rather
+// than whichever happens to be first.
+func TestListSuggestsARunningSession(t *testing.T) {
+	code := 0
+	sessions := []ipc.SessionInfo{
+		{ID: "t-aaa111", Running: false, ExitCode: &code},
+		{ID: "t-bbb222", Running: true},
+	}
+	_, body, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `it_send({"session":"t-bbb222"`) {
+		t.Errorf("the running session should be the one offered:\n%s", body)
+	}
+	if strings.Contains(body, `it_send({"session":"t-aaa111"`) {
+		t.Errorf("the ended session must not be offered for input:\n%s", body)
+	}
+}
+
+// Sessions disappearing from this list looks like data loss unless the rule
+// behind it is stated.
+func TestListExplainsWhyEndedSessionsDisappear(t *testing.T) {
+	sessions := []ipc.SessionInfo{{ID: "t-aaa111", Running: true}}
+	_, body, err := renderList(
+		ipc.ListResult{Sessions: sessions, Retention: config.RetentionOnClose}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "deleted when a session closes") {
+		t.Errorf("the retention rule should be stated:\n%s", body)
+	}
+
+	_, kept, err := renderList(
+		ipc.ListResult{Sessions: sessions, Retention: config.RetentionWeek}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(kept, "deleted when a session closes") {
+		t.Errorf("that rule does not apply under a retention window:\n%s", kept)
+	}
+}
+
+// Offering `ls -la` to PowerShell teaches an agent a command that fails there.
+func TestExampleCommandMatchesTheRunningShell(t *testing.T) {
+	for shell, want := range map[string]string{
+		"Windows PowerShell": "Get-ChildItem",
+		"PowerShell 7":       "Get-ChildItem",
+		"Command Prompt":     "dir",
+		"bash":               "ls -la",
+	} {
+		info := sampleSession()
+		info.Shell = shell
+		screen := ipc.Screen{Session: info, Lines: []string{"> "}, Settled: true, Observed: true}
+		body := strings.Join(activeGuidance(screen), "\n")
+		if !strings.Contains(body, want) {
+			t.Errorf("%s should be offered %q, got:\n%s", shell, want, body)
+		}
+	}
+}
+
+// Typing a command line into a pager does not run it; the keys mean something
+// else entirely to the program that owns the screen.
+func TestActiveGuidanceOffersKeystrokesToAFullScreenProgram(t *testing.T) {
+	info := sampleSession()
+	info.AltScreen = true
+	screen := ipc.Screen{Session: info, Lines: []string{":"}, Settled: true, Observed: true}
+	body := strings.Join(activeGuidance(screen), "\n")
+
+	if strings.Contains(body, `"text"`) {
+		t.Errorf("a command line is the wrong thing to send here:\n%s", body)
+	}
+	if !strings.Contains(body, `"keys"`) {
+		t.Errorf("keystrokes are what this session takes:\n%s", body)
+	}
+}
+
+// When the terminal itself reports nothing running, a warning that output may
+// not have arrived yet is filler over a fact the reply already carries.
+func TestAnUnobservedScreenOverAnIdleTerminalStaysQuiet(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(),
+		Lines:   []string{"lael@host:~/project$"},
+		Settled: false, Observed: false, WaitedMS: 30,
+		Busy: false, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "captured without waiting") {
+		t.Errorf("busy: false already answers this:\n%s", body)
+	}
+	if !strings.Contains(body, "busy: false") {
+		t.Errorf("the fact itself must still be reported:\n%s", body)
+	}
+}
+
+// The compact row drops detail, not facts. Omitting this one left every row
+// claiming its logs were gone, including sessions still writing to them.
+func TestCompactListRowKeepsLogRetention(t *testing.T) {
+	sessions := []ipc.SessionInfo{
+		{ID: "t-aaa111", Running: true, LogsRetained: true, TranscriptLines: 12},
+	}
+	_, _, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front, _, err := renderList(ipc.ListResult{Sessions: sessions}, 1, 2000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := front.(listMetadata).Sessions
+	if len(rows) != 1 || !rows[0].LogsRetained {
+		t.Errorf("a running session's logs are retained, got %+v", rows)
 	}
 }

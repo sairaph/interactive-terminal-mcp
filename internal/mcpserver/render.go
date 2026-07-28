@@ -10,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sairaph/interactive-terminal-mcp/internal/budget"
+	"github.com/sairaph/interactive-terminal-mcp/internal/config"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 	"github.com/sairaph/interactive-terminal-mcp/internal/render"
 	"gopkg.in/yaml.v3"
@@ -74,26 +75,36 @@ func documentResult(document render.Document) *mcp.CallToolResult {
 // screenMetadata is the frontmatter shared by it_active, it_new, it_read, and
 // it_send. One shape across four tools means a model learns it once.
 type screenMetadata struct {
-	Session           string `yaml:"session"`
-	Name              string `yaml:"name,omitempty"`
-	Active            bool   `yaml:"active"`
-	Running           bool   `yaml:"running"`
-	ExitCode          *int   `yaml:"exit_code,omitempty"`
-	PID               int    `yaml:"pid,omitempty"`
-	Size              []int  `yaml:"size,flow"`
-	Cursor            []int  `yaml:"cursor,flow"`
-	AltScreen         bool   `yaml:"alt_screen"`
-	Title             string `yaml:"title,omitempty"`
-	Shell             string `yaml:"shell,omitempty"`
-	Command           string `yaml:"command,omitempty"`
-	Cwd               string `yaml:"cwd,omitempty"`
-	Settled           bool   `yaml:"settled"`
+	Session   string `yaml:"session"`
+	Name      string `yaml:"name,omitempty"`
+	Active    bool   `yaml:"active"`
+	Running   bool   `yaml:"running"`
+	ExitCode  *int   `yaml:"exit_code,omitempty"`
+	PID       int    `yaml:"pid,omitempty"`
+	Size      []int  `yaml:"size,flow"`
+	Cursor    []int  `yaml:"cursor,flow"`
+	AltScreen bool   `yaml:"alt_screen"`
+	Title     string `yaml:"title,omitempty"`
+	Shell     string `yaml:"shell,omitempty"`
+	Command   string `yaml:"command,omitempty"`
+	Cwd       string `yaml:"cwd,omitempty"`
+
+	// Settled is absent when the call did not wait long enough to establish
+	// anything, because a flat false there reads as "output was still
+	// arriving" when in truth nothing was looked at.
+	Settled *bool `yaml:"settled,omitempty"`
+	// Busy is absent where it cannot be established. Where it is present it
+	// answers the question settled only ever approximated: whether a command
+	// is still running in this terminal.
+	Busy *bool `yaml:"busy,omitempty"`
+
 	Matched           *bool  `yaml:"matched,omitempty"`
 	WaitedFor         string `yaml:"waited_for,omitempty"`
 	WaitedMS          int64  `yaml:"waited_ms"`
 	LastActivityAt    string `yaml:"last_activity_at,omitempty"`
 	BlankLinesTrimmed int    `yaml:"blank_lines_trimmed,omitempty"`
 	TranscriptLines   int    `yaml:"transcript_lines"`
+	LogsRetained      bool   `yaml:"logs_retained"`
 	LogPath           string `yaml:"log_path,omitempty"`
 }
 
@@ -106,12 +117,20 @@ func screenFront(screen ipc.Screen) screenMetadata {
 		Cursor:    []int{screen.Cursor[0], screen.Cursor[1]},
 		AltScreen: info.AltScreen, Title: info.Title,
 		Shell: info.Shell, Command: commandText(info), Cwd: info.Cwd,
-		Settled: screen.Settled, WaitedMS: screen.WaitedMS,
+		WaitedMS:          screen.WaitedMS,
 		WaitedFor:         screen.WaitedFor,
 		LastActivityAt:    formatTime(info.LastActivityAt),
 		BlankLinesTrimmed: screen.BlankLinesTrimmed,
 		TranscriptLines:   info.TranscriptLines,
+		LogsRetained:      info.LogsRetained,
 		LogPath:           info.LogPath,
+	}
+	if screen.Observed {
+		settled := screen.Settled
+		front.Settled = &settled
+	}
+	if busy, known := busyState(screen); known {
+		front.Busy = &busy
 	}
 	if screen.WaitedFor != "" {
 		matched := screen.Matched
@@ -120,32 +139,96 @@ func screenFront(screen ipc.Screen) screenMetadata {
 	return front
 }
 
+// busyState reports whether a command is running in the terminal, and whether
+// that is established rather than assumed.
+//
+// A full-screen program is always the foreground process, so reporting it as a
+// running command would be true and useless: it would appear on every read of
+// a session sitting in vim. The question only means something at a shell.
+func busyState(screen ipc.Screen) (busy, known bool) {
+	if !screen.BusyKnown || screen.Session.AltScreen || !screen.Session.Running {
+		return false, false
+	}
+	return screen.Busy, true
+}
+
 // screenBody renders the screen followed by guidance.
 //
 // The screen always comes first: it is what the caller asked for, and burying
 // it under prose would make every result harder to read.
 func screenBody(screen ipc.Screen, guidance []string) string {
 	parts := []string{render.Screen(screen.Lines)}
-
-	// An unsettled screen is the single most important thing to say: the
-	// command may still be running and the output may be incomplete.
-	switch {
-	case screen.WaitedFor != "" && !screen.Matched && screen.Session.Running:
-		parts = append(parts, fmt.Sprintf(
-			"%q did not appear within %s, so the command is very likely still going. "+
-				"Wait for it again with `%s`.",
-			screen.WaitedFor, formatDuration(screen.WaitedMS),
-			call("it_read", map[string]any{
-				"session": screen.Session.ID, "wait_for": screen.WaitedFor, "wait": 60})))
-	case !screen.Settled && screen.Session.Running:
-		parts = append(parts, fmt.Sprintf(
-			"Output was still arriving when the %s wait ended, so this screen may be incomplete. "+
-				"Check again with `%s`.",
-			formatDuration(screen.WaitedMS),
-			call("it_read", map[string]any{"session": screen.Session.ID, "wait": 10})))
+	if note := waitNote(screen); note != "" {
+		parts = append(parts, note)
 	}
 	parts = append(parts, guidance...)
 	return strings.Join(parts, "\n\n")
+}
+
+// waitNote says what the wait established, and no more than that.
+//
+// Three separate facts are kept apart here, because collapsing them is how a
+// quiet screen came to be announced as a finished command: whether a wait ran
+// at all, what it saw, and whether the terminal still has a command in the
+// foreground. The last is the only one that answers "has it finished", so it
+// is stated wherever it is known and never guessed at where it is not.
+func waitNote(screen ipc.Screen) string {
+	if !screen.Session.Running {
+		// An ended session is covered by the per-tool guidance, which has the
+		// exit code to report alongside it.
+		return ""
+	}
+	id := screen.Session.ID
+	busy, busyKnown := busyState(screen)
+	waitAgain := call("it_read", map[string]any{"session": id, "wait": 10})
+
+	if screen.WaitedFor != "" && !screen.Matched {
+		elapsed := formatDuration(screen.WaitedMS)
+		switch {
+		case busyKnown && busy:
+			return fmt.Sprintf(
+				"%q did not appear in %s, and a command is still running in this terminal. Keep waiting with `%s`.",
+				screen.WaitedFor, elapsed,
+				call("it_read", map[string]any{
+					"session": id, "wait_for": screen.WaitedFor, "wait": 60}))
+		case busyKnown && !busy:
+			return fmt.Sprintf(
+				"%q did not appear in %s, and no command is running in this terminal now, so it has most likely "+
+					"finished without printing that text. The screen above is where it left off; if earlier output "+
+					"scrolled past, read it with `%s`.",
+				screen.WaitedFor, elapsed, call("it_tail", map[string]any{"session": id}))
+		default:
+			return fmt.Sprintf(
+				"%q did not appear in %s. Read the screen above before assuming the command is still going: "+
+					"it may have finished without printing that text. To keep waiting, use `%s`.",
+				screen.WaitedFor, elapsed,
+				call("it_read", map[string]any{
+					"session": id, "wait_for": screen.WaitedFor, "wait": 60}))
+		}
+	}
+
+	switch {
+	case busyKnown && busy:
+		// Quiet output and a finished command look identical. Where the
+		// terminal can tell them apart, say which one this is.
+		return fmt.Sprintf(
+			"A command is still running in this terminal, whether or not the screen has changed recently. "+
+				"Check on it with `%s`.", waitAgain)
+	case !screen.Observed && busyKnown:
+		// Nothing holds the terminal, which answers the question a wait would
+		// have been asked to answer. Saying more would be filler.
+		return ""
+	case !screen.Observed:
+		return fmt.Sprintf(
+			"This screen was captured without waiting, so a command that has just started may not have printed "+
+				"anything yet. Give it time with `%s`.",
+			call("it_read", map[string]any{"session": id, "wait": 5}))
+	case !screen.Settled:
+		return fmt.Sprintf(
+			"Output was still arriving when the %s wait ended, so this screen may be incomplete. Check again with `%s`.",
+			formatDuration(screen.BudgetMS), waitAgain)
+	}
+	return ""
 }
 
 func activeGuidance(screen ipc.Screen) []string {
@@ -155,9 +238,33 @@ func activeGuidance(screen ipc.Screen) []string {
 			"Session %s has ended%s. Its screen and logs are still readable. Start a new one with `%s`.",
 			label(info), exitPhrase(info), call("it_new", map[string]any{}))}
 	}
+	if info.AltScreen {
+		// Typing a command line into a pager or an editor does not run it; it
+		// is interpreted as whatever those keys mean to that program.
+		return []string{fmt.Sprintf(
+			"Session %s is active and a full-screen program is running in it, so send it keystrokes rather than "+
+				"a command line, as in `%s`.",
+			label(info), call("it_send", map[string]any{"keys": "DOWN*5"}))}
+	}
 	return []string{fmt.Sprintf(
 		"Session %s is active. Run a command with `%s`.",
-		label(info), call("it_send", map[string]any{"text": "ls -la"}))}
+		label(info), call("it_send", map[string]any{"text": exampleCommand(info)}))}
+}
+
+// exampleCommand picks a command line valid in the interpreter this session is
+// actually running. Offering `ls -la` to PowerShell teaches an agent a command
+// that fails there.
+func exampleCommand(info ipc.SessionInfo) string {
+	switch {
+	case strings.Contains(info.Shell, "PowerShell"):
+		return "Get-ChildItem"
+	case strings.Contains(info.Shell, "Command Prompt"):
+		return "dir"
+	case info.Shell == "":
+		return "pwd"
+	default:
+		return "ls -la"
+	}
 }
 
 func newGuidance(screen ipc.Screen) []string {
@@ -182,10 +289,18 @@ func newGuidance(screen ipc.Screen) []string {
 		// caller is about to write, and on Windows it is not guessable.
 		opening += fmt.Sprintf(", running %s", info.Shell)
 	}
+	if info.AltScreen {
+		return []string{fmt.Sprintf(
+			"%s. A full-screen program is running in it, so send it keystrokes with `%s`, and read it again "+
+				"later with `%s`.",
+			opening,
+			call("it_send", map[string]any{"keys": "DOWN*5"}),
+			call("it_read", map[string]any{"session": info.ID}))}
+	}
 	return []string{fmt.Sprintf(
 		"%s. Type into it with `%s`, and read it again later with `%s`.",
 		opening,
-		call("it_send", map[string]any{"text": "echo hello"}),
+		call("it_send", map[string]any{"text": exampleCommand(info)}),
 		call("it_read", map[string]any{"session": info.ID}))}
 }
 
@@ -240,8 +355,10 @@ func scrollbackNote(info ipc.SessionInfo) []string {
 	}
 	if info.TranscriptLines > 0 && info.LogsRetained {
 		return []string{fmt.Sprintf(
-			"%d earlier lines have scrolled off this screen. Read them with `%s`.",
-			info.TranscriptLines, call("it_tail", map[string]any{"session": info.ID, "lines": 100}))}
+			"This session's log holds %d earlier %s from above this screen. Read %s with `%s`.",
+			info.TranscriptLines, plural(info.TranscriptLines, "line", "lines"),
+			plural(info.TranscriptLines, "it", "them"),
+			call("it_tail", map[string]any{"session": info.ID, "lines": 100}))}
 	}
 	return nil
 }
@@ -265,13 +382,15 @@ func noActiveBody(result ipc.ActiveResult) string {
 			call("it_new", map[string]any{}))
 	}
 	if result.LiveSessions == 0 {
-		// Pointing at a dead session is not a useful next step; its output is
-		// still readable, but nothing can be run in it.
+		// Pointing at a dead session is not a useful next step, and whether its
+		// output survives at all depends on the retention policy, so the way in
+		// is it_list: it reports what is left and whether the logs are still
+		// there rather than promising output that may have been deleted.
 		return fmt.Sprintf(
-			"No session is active, and none of the %d %s still running. Their output is readable with `%s`. "+
+			"No session is active, and none of the %d %s still running. See what they left behind with `%s`. "+
 				"To run anything, create a session with `%s`.",
 			result.TotalSessions, plural(result.TotalSessions, "session is", "sessions are"),
-			call("it_tail", map[string]any{"session": "<id>"}),
+			call("it_list", map[string]any{}),
 			call("it_new", map[string]any{}))
 	}
 	return fmt.Sprintf(
@@ -286,12 +405,25 @@ func noActiveBody(result ipc.ActiveResult) string {
 // --- it_list ----------------------------------------------------------------
 
 type listMetadata struct {
-	Page       int       `yaml:"page"`
-	Total      int       `yaml:"total"`
-	TotalPages int       `yaml:"total_pages"`
-	Active     string    `yaml:"active,omitempty"`
-	Verbose    bool      `yaml:"verbose,omitempty"`
-	Sessions   []listRow `yaml:"sessions,omitempty"`
+	Page       int    `yaml:"page"`
+	Total      int    `yaml:"total"`
+	TotalPages int    `yaml:"total_pages"`
+	Active     string `yaml:"active,omitempty"`
+	Verbose    bool   `yaml:"verbose,omitempty"`
+	// Retention is the log retention policy, which decides how long an ended
+	// session stays listed at all.
+	Retention string    `yaml:"retention,omitempty"`
+	Sessions  []listRow `yaml:"sessions,omitempty"`
+}
+
+// firstRunning returns the first session that can still be typed into.
+func firstRunning(rows []listRow) *listRow {
+	for index := range rows {
+		if rows[index].Running {
+			return &rows[index]
+		}
+	}
+	return nil
 }
 
 // listRow is what a caller needs to pick a session. Everything beyond that is
@@ -314,6 +446,7 @@ type listRow struct {
 	CreatedAt       string `yaml:"created_at,omitempty"`
 	LastActivityAt  string `yaml:"last_activity_at,omitempty"`
 	TranscriptLines int    `yaml:"transcript_lines"`
+	LogsRetained    bool   `yaml:"logs_retained"`
 	LogPath         string `yaml:"log_path,omitempty"`
 }
 
@@ -325,7 +458,10 @@ func (r listRow) compact() listRow {
 		ID: r.ID, Name: r.Name, Active: r.Active, Running: r.Running,
 		ExitCode: r.ExitCode, KilledBy: r.KilledBy,
 		Command: r.Command, LastActivityAt: r.LastActivityAt,
-		TranscriptLines: r.TranscriptLines,
+		// Kept because it is not optional detail: dropping it left every row
+		// reporting logs_retained: false, including sessions whose logs were
+		// perfectly readable.
+		TranscriptLines: r.TranscriptLines, LogsRetained: r.LogsRetained,
 	}
 }
 
@@ -339,7 +475,8 @@ func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any
 			Size:      []int{info.Cols, info.Rows},
 			AltScreen: info.AltScreen, Title: info.Title,
 			CreatedAt: formatTime(info.CreatedAt), LastActivityAt: formatTime(info.LastActivityAt),
-			TranscriptLines: info.TranscriptLines, LogPath: info.LogPath,
+			TranscriptLines: info.TranscriptLines,
+			LogsRetained:    info.LogsRetained, LogPath: info.LogPath,
 		})
 	}
 
@@ -361,7 +498,8 @@ func renderList(result ipc.ListResult, page, tokenBudget int, verbose bool) (any
 
 	front := listMetadata{
 		Page: page, Total: len(rows), TotalPages: totalPages,
-		Active: result.Active, Verbose: verbose, Sessions: window,
+		Active: result.Active, Verbose: verbose,
+		Retention: result.Retention, Sessions: window,
 	}
 	return front, listBody(front, window), nil
 }
@@ -392,15 +530,39 @@ func listBody(front listMetadata, window []listRow) string {
 	}
 	parts = append(parts, fmt.Sprintf("%s, %d running.", summary, live))
 
-	if front.Active == "" && live > 0 {
+	// Every suggestion below names a session that can actually accept it.
+	// Pointing it_send at a session this same reply reports as ended costs the
+	// caller a round trip to be told what it already knew.
+	running := firstRunning(window)
+	if front.Active == "" && running != nil {
 		parts = append(parts, fmt.Sprintf(
 			"No session is active. Select one with `%s` so the other tools can default to it.",
-			call("it_active", map[string]any{"session": window[0].ID})))
+			call("it_active", map[string]any{"session": running.ID})))
 	}
-	parts = append(parts, fmt.Sprintf(
-		"Read a session with `%s`, or type into it with `%s`.",
-		call("it_read", map[string]any{"session": window[0].ID}),
-		call("it_send", map[string]any{"session": window[0].ID, "text": "pwd"})))
+	if running != nil {
+		parts = append(parts, fmt.Sprintf(
+			"Read a session with `%s`, or type into it with `%s`.",
+			call("it_read", map[string]any{"session": running.ID}),
+			call("it_send", map[string]any{"session": running.ID, "text": "pwd"})))
+	} else {
+		// The final screen outlives the process, but the log does not
+		// necessarily outlive the retention policy, so only offer it_tail
+		// where there is a log left to read.
+		recover := call("it_read", map[string]any{"session": window[0].ID})
+		if window[0].LogsRetained && window[0].TranscriptLines > 0 {
+			recover = call("it_tail", map[string]any{"session": window[0].ID})
+		}
+		parts = append(parts, fmt.Sprintf(
+			"None of these sessions is still running, so nothing can be typed into them. "+
+				"Read what one left behind with `%s`, or start a new session with `%s`.",
+			recover, call("it_new", map[string]any{})))
+	}
+	if front.Retention == config.RetentionOnClose {
+		// A session vanishing from this list looks like data loss unless the
+		// rule behind it is stated.
+		parts = append(parts, "Ended sessions leave this list as soon as they end, because session logs "+
+			"are set to be deleted when a session closes.")
+	}
 
 	if front.Page < front.TotalPages {
 		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("it_list", map[string]any{"page": front.Page + 1})))

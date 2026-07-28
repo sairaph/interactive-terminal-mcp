@@ -231,6 +231,15 @@ returns as soon as output goes quiet, so `wait: 30` costs milliseconds for
 output still arriving, the result says `settled: false` and tells the agent to
 look again - it never quietly returns a half-drawn screen.
 
+Quiet output is the weakest of the three completion signals, because a command
+that prints nothing is quiet from the moment it starts. `busy` is stronger: it
+comes from the terminal's own foreground process group rather than from timing,
+so `busy: true` is proof a command is still running and `busy: false` is strong
+evidence that none is. `wait_for` is exact - the call ends the moment the given
+text appears, and the echo of the command being typed is discounted, so
+`it_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` ends on the
+output rather than on the command line.
+
 ### Full-screen programs
 
 Output from a program using the alternate screen never scrolls, so it is

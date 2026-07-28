@@ -631,7 +631,8 @@ func TestWaitUntilWaitsForNewOutputNotTheEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond, "ARRIVED")
+	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond,
+		WaitTarget{Text: "ARRIVED", Echo: "sleep 3; echo ARRIVED"})
 	if !result.Matched {
 		t.Fatalf("the text should have been matched, got %+v", result)
 	}
@@ -658,17 +659,88 @@ func TestWaitUntilHandlesASilentCommand(t *testing.T) {
 	if err := session.Write([]byte("sleep 2; echo DONE-NOW\n")); err != nil {
 		t.Fatal(err)
 	}
-	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond, "DONE-NOW")
+	result := session.WaitUntil(context.Background(), 20*time.Second, 250*time.Millisecond,
+		WaitTarget{Text: "DONE-NOW", Echo: "sleep 2; echo DONE-NOW"})
 	if !result.Matched || result.Waited < time.Second {
 		t.Errorf("a silent command should be waited out, got %+v", result)
 	}
+}
+
+// A command that finishes immediately is the common case, and the one an
+// echo-suppressing wait is most likely to miss: its entire output arrives in
+// the same burst as the echo of the command line. Excluding output by when it
+// arrived rather than by what it is made every fast command unwaitable.
+func TestWaitUntilMatchesOutputInTheFirstBurst(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "> ", 5*time.Second)
+
+	// Nothing in this command line contains the target, so the first thing on
+	// the screen carrying it is the result.
+	if err := session.Write([]byte("printf 'BULK%s\\n' -DONE\n")); err != nil {
+		t.Fatal(err)
+	}
+	result := session.WaitUntil(context.Background(), 10*time.Second, 250*time.Millisecond,
+		WaitTarget{Text: "BULK-DONE", Echo: "printf 'BULK%s\\n' -DONE"})
+	if !result.Matched {
+		t.Fatalf("output printed immediately must still be matched, got %+v", result)
+	}
+	if result.Waited > 3*time.Second {
+		t.Errorf("a command that prints at once should match at once, waited %v", result.Waited)
+	}
+}
+
+// A wait with no input of its own is asking whether something is on the screen,
+// so text that is already there answers it.
+func TestWaitUntilMatchesTextAlreadyOnScreen(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\necho CEILING-TEST\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "CEILING-TEST", 5*time.Second)
+
+	result := session.WaitUntil(context.Background(), 5*time.Second, 250*time.Millisecond,
+		WaitTarget{Text: "CEILING-TEST"})
+	if !result.Matched {
+		t.Fatalf("text already on the screen must match, got %+v", result)
+	}
+	if result.Waited > time.Second {
+		t.Errorf("it was already there; waiting %v for it is wrong", result.Waited)
+	}
+}
+
+// The same text is not a result when the caller has typed something new and is
+// waiting for what that produces.
+func TestWaitUntilIgnoresTheBaselineAfterInput(t *testing.T) {
+	session := newTestSession(t, Options{Argv: []string{"sh"}})
+	if err := session.Write([]byte("PS1='> '\necho REPEATED\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForScreen(t, session, "REPEATED", 5*time.Second)
+
+	baseline := session.CountOnScreen("REPEATED")
+	if baseline == 0 {
+		t.Fatal("the baseline should have counted the text already on screen")
+	}
+	if err := session.Write([]byte("sleep 30\n")); err != nil {
+		t.Fatal(err)
+	}
+	result := session.WaitUntil(context.Background(), time.Second, 250*time.Millisecond,
+		WaitTarget{Text: "REPEATED", Echo: "sleep 30", Baseline: baseline})
+	if result.Matched {
+		t.Error("text that was already on the screen is not the result of new input")
+	}
+	_ = session.Kill("KILL", "test")
 }
 
 // Text that never arrives must be reported as not arriving.
 func TestWaitUntilReportsAMiss(t *testing.T) {
 	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 30"}})
 
-	result := session.WaitUntil(context.Background(), 1500*time.Millisecond, 250*time.Millisecond, "NEVER")
+	result := session.WaitUntil(context.Background(), 1500*time.Millisecond, 250*time.Millisecond,
+		WaitTarget{Text: "NEVER"})
 	if result.Matched {
 		t.Error("text that never appeared must not be reported as matched")
 	}
