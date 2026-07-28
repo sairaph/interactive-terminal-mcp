@@ -2,10 +2,10 @@
 
 package session
 
-// IgnoreConsoleInterrupts is a no-op outside Windows. A Unix daemon is
-// detached from any controlling terminal, so no terminal-generated signal
-// reaches it in the first place.
-func IgnoreConsoleInterrupts() error { return nil }
+// EnableConsoleInterrupts is a no-op outside Windows. A Unix terminal delivers
+// the interrupt itself through the line discipline, with no process-wide
+// attribute to restore.
+func EnableConsoleInterrupts() error { return nil }
 
 // InterruptHelperCommand exists so the CLI can reference one name on every
 // platform. Nothing dispatches to it outside Windows.

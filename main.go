@@ -115,9 +115,11 @@ func runDaemon(ctx context.Context, runtime *bootstrap.Runtime, command cli.Comm
 		return stopDaemon(ctx, runtime, command, options)
 	}
 
-	// A console control event aimed at one session must never be able to take
-	// the daemon down, and with it every terminal it owns.
-	_ = session.IgnoreConsoleInterrupts()
+	// Sessions inherit this process's Ctrl+C attribute, and the daemon is
+	// created in a new process group, which disables Ctrl+C for everything in
+	// it. Restoring normal processing here is what lets an interrupt reach a
+	// command running inside a session at all.
+	_ = session.EnableConsoleInterrupts()
 
 	server, err := daemon.Open(runtime.Paths, runtime.Config, version)
 	if err != nil {

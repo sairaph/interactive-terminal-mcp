@@ -164,8 +164,7 @@ func (s *Service) registerTools() {
 			"because ending the wrong terminal cannot be undone. " +
 			"Sends TERM by default and escalates to KILL if the process does not exit. " +
 			"INT asks the running command to stop and leaves the session usable, and the reply reports whether it " +
-			"actually stopped; on Windows native shells often do not receive it, so TERM is the reliable option there. " +
-			"Find the session to end with it_list.",
+			"actually stopped. Find the session to end with it_list.",
 		InputSchema: killSchema(),
 	}, s.kill)
 
@@ -382,8 +381,7 @@ func killSchema() map[string]any {
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
 				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
-				"and the reply says whether the command stopped. On Windows a command started from a native shell " +
-				"often does not receive it, so treat TERM as the reliable way to stop work there. " +
+				"and the reply says whether the command stopped. " +
 				"KILL ends the session immediately and cannot be refused.",
 		},
 	}, "session")

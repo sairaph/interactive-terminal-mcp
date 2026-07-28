@@ -122,14 +122,26 @@ func RunInterruptHelper(pid int) error {
 	return nil
 }
 
-// IgnoreConsoleInterrupts makes this process immune to console control events.
+// EnableConsoleInterrupts restores normal Ctrl+C processing for this process
+// and, by inheritance, for every session started afterwards.
 //
-// The daemon calls this at startup as a second line of defence. It runs
-// detached with no console of its own and is never meant to die from an
-// interrupt aimed at a session; a stray event must never take every terminal
-// down with it.
-func IgnoreConsoleInterrupts() error {
-	return ignoreCtrlC(true)
+// This is what makes an interrupt reach a command at all on Windows. Two
+// separate things disable it, and both applied here:
+//
+// The daemon is created with CREATE_NEW_PROCESS_GROUP so it survives the AI
+// client that spawned it, and that flag disables CTRL+C for every process in
+// the new group. Sessions are created by the daemon, so they inherited the
+// disabled state and could never be interrupted.
+//
+// Separately, SetConsoleCtrlHandler(NULL, TRUE) sets an ignore attribute that
+// is likewise inherited, so protecting the daemon that way would silently
+// protect every command running inside it too.
+//
+// The daemon does not need either. It is created with DETACHED_PROCESS and so
+// owns no console for an event to arrive on, and it never attaches to a
+// session's console: the event is raised by a separate helper process.
+func EnableConsoleInterrupts() error {
+	return ignoreCtrlC(false)
 }
 
 func attachConsole(pid uint32) error {
