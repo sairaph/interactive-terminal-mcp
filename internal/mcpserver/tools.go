@@ -12,27 +12,6 @@ import (
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 )
 
-// --- it_active --------------------------------------------------------------
-
-type activeInput struct {
-	Session string `json:"session,omitempty"`
-}
-
-func (s *Service) active(ctx context.Context, _ *mcp.CallToolRequest, input activeInput) (*mcp.CallToolResult, any, error) {
-	args := ipc.ActiveArgs{Session: strings.TrimSpace(input.Session)}
-	args.Set = args.Session != ""
-
-	var result ipc.ActiveResult
-	if err := s.call(ctx, ipc.OpSessionAtive, args, &result); err != nil {
-		return errorResult(err), nil, nil
-	}
-	if result.Active == nil {
-		return successResult(noActiveFront(result), noActiveBody(result)), nil, nil
-	}
-	front := screenFront(*result.Active)
-	return successResult(front, screenBody(*result.Active, activeGuidance(*result.Active))), nil, nil
-}
-
 // --- it_list ----------------------------------------------------------------
 
 type listInput struct {

@@ -44,7 +44,6 @@ type model struct {
 
 	// home
 	sessions  []ipc.SessionInfo
-	active    string
 	cursor    int
 	confirm   *confirmState
 	renaming  bool
@@ -139,7 +138,7 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(commands...)
 
 	case sessionsMsg:
-		m.sessions, m.active = message.sessions, message.active
+		m.sessions = message.sessions
 		m.failure = ""
 		if message.err != nil {
 			m.status = message.err.Error()
@@ -326,7 +325,6 @@ type tickMsg time.Time
 
 type sessionsMsg struct {
 	sessions []ipc.SessionInfo
-	active   string
 	err      error
 }
 
@@ -350,6 +348,6 @@ func (m *model) loadSessions() tea.Cmd {
 		if err := client.Call(ctx, ipc.OpSessionList, nil, &result); err != nil {
 			return sessionsMsg{err: err}
 		}
-		return sessionsMsg{sessions: result.Sessions, active: result.Active}
+		return sessionsMsg{sessions: result.Sessions}
 	}
 }

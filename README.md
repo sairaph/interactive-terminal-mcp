@@ -168,17 +168,17 @@ every client, so there is nothing to duplicate per client.
 
 ## Tools
 
-All **8 tools** operate on persistent terminal sessions. A session is addressed
-by its id (`t-k3f9qa`) or the name you gave it (`build`); omit it and the tool
-uses the active session.
+All **7 tools** operate on persistent terminal sessions. Every tool that
+touches a session takes its id (`t-k3f9qa`) or the name you gave it (`build`).
+There is no default: one daemon serves every agent on the machine, so a shared
+current session would let one agent's command land in another's terminal.
 
 ### Sessions
 
 | Tool | Description |
 | --- | --- |
-| `it_active` | Report which session is active, or switch to another, and return its screen |
 | `it_list` | List all sessions, running and recently ended, newest activity first |
-| `it_new` | Create a session, make it active, return its first screen |
+| `it_new` | Create a session and return its first screen, with the id every other tool needs |
 | `it_kill` | End a session (**requires** an explicit session; never inferred) |
 
 ### Using a session
@@ -193,9 +193,9 @@ uses the active session.
 A typical agent flow:
 
 ```js
-it_active({})                                   // is a session already open?
+it_list({})                                     // is a session already open?
 it_new({"name": "dev"})                         // no - create one
-it_send({"text": "npm run dev", "wait": 10})    // start the server
+it_send({"session": "dev", "text": "npm run dev", "wait": 10})
 it_read({"session": "dev"})                     // check on it later
 it_tail({"session": "dev", "lines": 50})        // what scrolled past?
 it_kill({"session": "dev"})                     // done
@@ -231,7 +231,14 @@ returns as soon as output goes quiet, so `wait: 30` costs milliseconds for
 output still arriving, the result says `settled: false` and tells the agent to
 look again - it never quietly returns a half-drawn screen.
 
-Quiet output is the weakest of the three completion signals, because a command
+A `bash` session is started with a small shell-integration script, so the shell
+itself reports where each command begins and ends and with what status. That
+gives `command_exit`, an exit code for a command run *inside* a session, and
+makes `busy` a report rather than an inference. It sources your own config
+first and never replaces your prompt; if it fails the shell starts normally and
+the tools fall back. `shell_integration = false` turns it off.
+
+Without it, quiet output is the weakest of the three completion signals, because a command
 that prints nothing is quiet from the moment it starts. `busy` is stronger: it
 comes from the terminal's own foreground process group rather than from timing,
 so `busy: true` is proof a command is still running and `busy: false` is strong
@@ -272,7 +279,7 @@ Run `interactive-terminal-mcp` in a terminal with no arguments:
 │                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────╯
   ↑↓ navigate · enter open · n new · backspace delete · r rename
-  a set active · c configure · q quit
+  c configure · q quit
 ```
 
 Press enter on a session to open it in a framed terminal. It behaves like a

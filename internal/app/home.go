@@ -66,15 +66,10 @@ func (m *model) handleHomeKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.startRename(m.selected())
-	case "a":
-		if m.cursor == newSessionRow {
-			return m, nil
-		}
-		return m, m.setActive(m.selected().ID)
 	case "c":
 		return m, m.openConfigure()
 	case "?":
-		m.status = "↑↓ move · enter open · n new · backspace delete · r rename · a set active · c configure · q quit · Q stop daemon"
+		m.status = "↑↓ move · enter open · n new · backspace delete · r rename · c configure · q quit · Q stop daemon"
 	}
 	return m, nil
 }
@@ -279,22 +274,6 @@ func (m *model) renameSession(id, name string) tea.Cmd {
 	}
 }
 
-func (m *model) setActive(id string) tea.Cmd {
-	ctx, runtime := m.ctx, m.runtime
-	return func() tea.Msg {
-		client, err := runtime.Dial(ctx)
-		if err != nil {
-			return errorMsg{err}
-		}
-		defer client.Close()
-		var result ipc.ActiveResult
-		if err := client.Call(ctx, ipc.OpSessionAtive, ipc.ActiveArgs{Session: id, Set: true}, &result); err != nil {
-			return errorMsg{err}
-		}
-		return statusMsg("Session " + id + " is now active; agents reach it without naming a session.")
-	}
-}
-
 // --- view -------------------------------------------------------------------
 
 func (m *model) viewHome() string {
@@ -337,9 +316,9 @@ func (m *model) viewHome() string {
 		return out.String()
 	}
 
-	out.WriteString(styleFooter.Render("  ↑↓ navigate · enter open · n new · N new unnamed · backspace delete · r rename"))
+	out.WriteString(styleFooter.Render("  ↑↓ navigate · enter open · n new · N new unnamed · backspace delete"))
 	out.WriteByte('\n')
-	out.WriteString(styleFooter.Render("  a set active · c configure · q quit"))
+	out.WriteString(styleFooter.Render("  r rename · c configure · q quit"))
 	if m.status != "" {
 		out.WriteString("\n  " + m.status)
 	}
@@ -369,8 +348,6 @@ func (m *model) homeRow(info ipc.SessionInfo) string {
 	name := info.Name
 	if name == "" {
 		name = styleDim.Render("(unnamed)")
-	} else if info.Active {
-		name = styleActive.Render(name)
 	}
 
 	return fmt.Sprintf("%s %-18s %-10s %-9s %-8s %-13s %d lines",

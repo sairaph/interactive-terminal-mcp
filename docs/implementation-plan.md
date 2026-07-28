@@ -216,7 +216,7 @@ carries streaming attach traffic that MCP has no shape for.
 ```
 
 Operations: `ping`, `session.list`, `session.new`, `session.read`,
-`session.send`, `session.kill`, `session.log`, `session.active`,
+`session.send`, `session.kill`, `session.log`,
 `session.resize`, `attach.open`, `attach.input`, `attach.close`,
 `daemon.status`, `daemon.stop`.
 
@@ -237,7 +237,7 @@ winner.
 
 ### `internal/daemon` — the server
 
-Holds the session registry, the active-session pointer, the retention sweeper,
+Holds the session registry, the retention sweeper,
 and the listener. Single-threaded registry guarded by one mutex; per-session
 work happens in that session's own goroutines.
 
@@ -282,7 +282,7 @@ INTERACTIVE TERMINAL
 > build      t-k3f9qa   running   160x48   3s ago          1842 lines
   (unnamed)  t-p2m8wd   exited 0  160x48   26m ago         96 lines
 
-  enter attach   n new   k kill   r rename   a set active
+  enter attach   n new   k kill   r rename
   c configure clients   s settings   q quit
 ```
 
@@ -506,7 +506,7 @@ Each milestone ends with a working, tested, committed binary.
 | 1 | **Skeleton** | Repo, module `github.com/sairaph/interactive-terminal-mcp`, LICENSE, VERSION, `.gitignore`, `.env`, both workflows, `main.go` entrypoint switch, ported `budget` / `render` / `fsx` / `config`. CI green. |
 | 2 | **Terminal core** | `vterm` adapter and `session`: PTY spawn, emulator, snapshot extraction, settle, transcript and raw logs, exit capture, retention. Full unit + PTY tests. No MCP yet. |
 | 3 | **Keys** | `keys` parser and mode-aware encoder with the full table-driven suite. |
-| 4 | **Daemon + IPC** | Socket/named pipe, wire protocol, registry, active-session pointer, autostart, singleton lock, retention sweeper, restart recovery, `daemon` and `doctor` commands. |
+| 4 | **Daemon + IPC** | Socket/named pipe, wire protocol, registry, autostart, singleton lock, retention sweeper, restart recovery, `daemon` and `doctor` commands. |
 | 5 | **MCP surface** | All eight tools, schemas, frontmatter, bodies, truncation, pagination, error contract. Golden-file tests. This is the first genuinely useful release — tag `v0.1.0`. |
 | 6 | **CLI one-shots** | `ls`, `new`, `send`, `read`, `tail`, `head`, `kill`, `attach`, human rendering. |
 | 7 | **Installer** | `detect-harness` integration, the configure TUI including the log-retention question, settings editor, restore defaults, `install.sh`, `install.ps1`. Tag `v0.2.0`. |
@@ -641,7 +641,7 @@ fallback is stable and per-user.
 | `keys` | Every named key and modifier, both DECCKM states, repeats, quoted and bare literals, and every rejection path |
 | `vterm` | Plain-text extraction, wide characters, interior vs trailing blanks, mode and title tracking, eviction accounting, concurrent write/snapshot/query, close releasing a blocked reader |
 | `session` | Real PTYs: input round trip, settle-early and settle-expired, exit capture, transcript vs alternate screen, resize reaching the child, kill and escalation, terminal queries, a full `vim` edit-and-save |
-| `daemon` | Two-process lifecycle over a real socket, active-session selection, kill requiring an explicit target, TERM escalation, INT leaving the session usable, name conflicts, typed errors, singleton locking |
+| `daemon` | Two-process lifecycle over a real socket, every tool requiring an explicit session, kill requiring an explicit target, TERM escalation, INT leaving the session usable, name conflicts, typed errors, singleton locking |
 | `ipc` | Request/response matching under concurrency, typed errors across the wire, stale vs live socket handling, socket permissions, deadlines |
 | `mcpserver` | Golden-file assertions on every rendered document, plus an end-to-end run of all eight tools against a live daemon, including driving `less` with keys |
 | `budget` | Truncation direction, oversized records, pagination completeness |

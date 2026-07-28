@@ -41,7 +41,7 @@ func (c *connection) handleAttachOpen(args ipc.AttachArgs) (any, error) {
 	c.attached = true
 	c.attachID = live.ID()
 	return map[string]any{
-		"session": c.daemon.describeSession(item, c.daemon.registry.activeID()),
+		"session": c.daemon.describeSession(item),
 		"replay":  replay,
 	}, nil
 }

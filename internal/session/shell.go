@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -60,6 +61,29 @@ func executableNames(id string) []string {
 		return nil
 	}
 	return []string{id}
+}
+
+// shellForProgram identifies a shell launched directly as a command.
+//
+// A session started as ["cmd.exe"] is running the same interpreter as one
+// started with shell: "cmd", and reporting a shell for one but not the other
+// left an agent unable to tell what syntax the session expected. Only a bare
+// invocation counts: `bash -c ...` runs one command and exits, which is not
+// the interactive shell the label describes.
+func shellForProgram(argv []string) (Shell, bool) {
+	if len(argv) != 1 {
+		return Shell{}, false
+	}
+	name := strings.ToLower(filepath.Base(argv[0]))
+	for _, candidate := range candidates() {
+		for _, executable := range executableNames(candidate.ID) {
+			if name == strings.ToLower(executable) {
+				candidate.Path = argv[0]
+				return candidate, true
+			}
+		}
+	}
+	return Shell{}, false
 }
 
 // AvailableShells returns the shells present on this machine, best first.

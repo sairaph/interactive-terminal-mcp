@@ -26,13 +26,11 @@ const interruptObserveFor = 2 * time.Second
 
 func (d *Daemon) handleList() (ipc.ListResult, error) {
 	entries := d.registry.list()
-	active := d.registry.activeID()
 	sessions := make([]ipc.SessionInfo, 0, len(entries))
 	for _, item := range entries {
-		sessions = append(sessions, d.describeSession(item, active))
+		sessions = append(sessions, d.describeSession(item))
 	}
 	return ipc.ListResult{
-		Active:    active,
 		Sessions:  sessions,
 		Retention: d.registry.settingsSnapshot().LogRetention,
 	}, nil
@@ -78,6 +76,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 		ID: id, Name: name,
 		CommandLine: args.CommandLine, Argv: args.Argv,
 		Cwd: args.Cwd, Env: args.Env, Cols: cols, Rows: rows, Shell: args.Shell,
+		Integrate:          settings.IntegrateShells(),
 		Directory:          directory,
 		ScrollbackLines:    settings.ScrollbackLines,
 		RawLogMaxBytes:     settings.RawLogMaxBytes,
@@ -105,7 +104,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 }
 
 func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen, error) {
-	item, err := d.registry.resolveOrActive(args.Session)
+	item, err := d.registry.resolve(args.Session)
 	if err != nil {
 		return ipc.Screen{}, err
 	}
@@ -247,7 +246,7 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 		return ipc.KillResult{}, &ipc.Error{
 			Code:    ipc.CodeInvalidInput,
 			Message: "session is required for it_kill",
-			Hint:    "Name the session explicitly, for example it_kill({\"session\":\"build\"}). The active session is never assumed here.",
+			Hint:    "Name the session to end, for example it_kill({\"session\":\"build\"}). It is never assumed, because ending the wrong terminal cannot be undone. Call it_list() to see what exists.",
 			Fields:  map[string]any{"field": "session"},
 		}
 	}
@@ -365,11 +364,6 @@ func (d *Daemon) retire(item *entry, settings config.Config, result *ipc.KillRes
 			current.live = nil
 		}
 		current.retainedAt = time.Now().UTC()
-		if d.registry.active == item.id() {
-			// The killed session stops being active; an exited-but-not-killed
-			// one stays active so its final screen remains easy to read.
-			d.registry.active = d.registry.mostRecentLiveLocked()
-		}
 	}
 	d.registry.mu.Unlock()
 
@@ -437,7 +431,7 @@ func (d *Daemon) observeInterrupt(ctx context.Context, live *session.Session, se
 }
 
 func (d *Daemon) handleLog(args ipc.LogArgs) (ipc.LogResult, error) {
-	item, err := d.registry.resolveOrActive(args.Session)
+	item, err := d.registry.resolve(args.Session)
 	if err != nil {
 		return ipc.LogResult{}, err
 	}
@@ -473,7 +467,7 @@ func (d *Daemon) handleLog(args ipc.LogArgs) (ipc.LogResult, error) {
 	}
 
 	result := ipc.LogResult{
-		Session:    d.describeSession(item, d.registry.activeID()),
+		Session:    d.describeSession(item),
 		Lines:      slice.Lines,
 		TotalLines: slice.Total,
 		AtStart:    slice.AtStart,
@@ -488,56 +482,6 @@ func (d *Daemon) handleLog(args ipc.LogArgs) (ipc.LogResult, error) {
 	return result, nil
 }
 
-func (d *Daemon) handleActive(ctx context.Context, args ipc.ActiveArgs) (ipc.ActiveResult, error) {
-	total, live := d.registry.counts()
-	result := ipc.ActiveResult{LiveSessions: live, TotalSessions: total}
-
-	if args.Set {
-		item, err := d.registry.resolve(args.Session)
-		if err != nil {
-			return ipc.ActiveResult{}, err
-		}
-		d.registry.setActive(item.id())
-		screen, err := d.screenFor(ctx, item)
-		if err != nil {
-			return ipc.ActiveResult{}, err
-		}
-		result.Active = &screen
-		return result, nil
-	}
-
-	activeID := d.registry.activeID()
-	if activeID == "" {
-		return result, nil
-	}
-	item, err := d.registry.resolve(activeID)
-	if err != nil {
-		// The active pointer outlived its session; report no active session
-		// rather than an error the caller cannot act on.
-		d.registry.setActive("")
-		return result, nil
-	}
-	screen, err := d.screenFor(ctx, item)
-	if err != nil {
-		return ipc.ActiveResult{}, err
-	}
-	result.Active = &screen
-	return result, nil
-}
-
-// screenFor snapshots an entry, tolerating one whose process has ended.
-func (d *Daemon) screenFor(ctx context.Context, item *entry) (ipc.Screen, error) {
-	if item.live == nil {
-		return ipc.Screen{Session: d.describeSession(item, d.registry.activeID())}, nil
-	}
-	settings := d.registry.settingsSnapshot()
-	// Long enough to observe a quiet window, so the reply can say whether
-	// output had stopped rather than that it never looked. The wait is a
-	// ceiling, so an idle session still returns as soon as it is quiet.
-	settled := item.live.WaitSettled(ctx, settings.SettleQuiet*4, settings.SettleQuiet)
-	return d.screen(item.live, settled), nil
-}
-
 func (d *Daemon) handleRename(args ipc.RenameArgs) (ipc.SessionInfo, error) {
 	item, err := d.registry.resolve(args.Session)
 	if err != nil {
@@ -547,14 +491,8 @@ func (d *Daemon) handleRename(args ipc.RenameArgs) (ipc.SessionInfo, error) {
 	if err := d.registry.nameAvailable(name, item.id()); err != nil {
 		return ipc.SessionInfo{}, err
 	}
-	if item.live != nil {
-		item.live.Rename(name)
-	} else {
-		d.registry.mu.Lock()
-		item.metadata.Name = name
-		d.registry.mu.Unlock()
-	}
-	return d.describeSession(item, d.registry.activeID()), nil
+	d.registry.assignName(item, name)
+	return d.describeSession(item), nil
 }
 
 func (d *Daemon) handleResize(args ipc.ResizeArgs) (ipc.SessionInfo, error) {
@@ -568,11 +506,11 @@ func (d *Daemon) handleResize(args ipc.ResizeArgs) (ipc.SessionInfo, error) {
 	if err := item.live.Resize(args.Cols, args.Rows); err != nil {
 		return ipc.SessionInfo{}, internalError(err)
 	}
-	return d.describeSession(item, d.registry.activeID()), nil
+	return d.describeSession(item), nil
 }
 
 func (d *Daemon) handleScrollback(args ipc.ScrollArgs) (ipc.ScrollResult, error) {
-	item, err := d.registry.resolveOrActive(args.Session)
+	item, err := d.registry.resolve(args.Session)
 	if err != nil {
 		return ipc.ScrollResult{}, err
 	}
@@ -618,8 +556,17 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 	// reported rather than inferred from output timing downstream.
 	busy, busyKnown := live.CommandBusy()
 
+	// A shell with integration reports how its last command ended. Nothing
+	// else in this project can produce an exit status for a command that ran
+	// inside a session rather than being the session.
+	var commandExit *int
+	if state := live.Commands(); state.Integrated && state.HasExit && !state.Running {
+		code := state.ExitCode
+		commandExit = &code
+	}
+
 	return ipc.Screen{
-		Session:           d.describeSession(item, d.registry.activeID()),
+		Session:           d.describeSession(item),
 		Lines:             snapshot.Lines,
 		Cursor:            snapshot.Cursor,
 		BlankLinesTrimmed: snapshot.BlankLinesTrimmed,
@@ -630,16 +577,16 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 		BudgetMS:          settled.Budget.Milliseconds(),
 		Busy:              busy,
 		BusyKnown:         busyKnown,
+		CommandExit:       commandExit,
 	}
 }
 
 // describeSession renders one entry for the wire, whether live or retained.
-func (d *Daemon) describeSession(item *entry, active string) ipc.SessionInfo {
+func (d *Daemon) describeSession(item *entry) ipc.SessionInfo {
 	settings := d.registry.settingsSnapshot()
 	info := ipc.SessionInfo{
-		ID:     item.id(),
-		Name:   item.name(),
-		Active: item.id() == active,
+		ID:   item.id(),
+		Name: item.name(),
 	}
 
 	if item.live != nil {

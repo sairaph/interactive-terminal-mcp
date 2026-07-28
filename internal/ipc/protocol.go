@@ -26,7 +26,6 @@ const (
 	OpSessionSend   = "session.send"
 	OpSessionKill   = "session.kill"
 	OpSessionLog    = "session.log"
-	OpSessionAtive  = "session.active"
 	OpSessionRename = "session.rename"
 	OpSessionResize = "session.resize"
 	OpSessionScroll = "session.scrollback"
@@ -70,7 +69,6 @@ func (e *Error) Error() string { return e.Message }
 // keeps its meaning from the daemon all the way to the agent.
 const (
 	CodeInvalidInput      = "invalid_input"
-	CodeNoActiveSession   = "no_active_session"
 	CodeSessionNotFound   = "session_not_found"
 	CodeSessionExited     = "session_exited"
 	CodeNameConflict      = "name_conflict"
@@ -84,7 +82,6 @@ const (
 type SessionInfo struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name,omitempty"`
-	Active          bool       `json:"active"`
 	Running         bool       `json:"running"`
 	PID             int        `json:"pid,omitempty"`
 	ExitCode        *int       `json:"exit_code,omitempty"`
@@ -129,6 +126,9 @@ type Screen struct {
 	// what a shell does inside itself.
 	Busy      bool `json:"busy,omitempty"`
 	BusyKnown bool `json:"busy_known,omitempty"`
+	// CommandExit is the status of the last command the shell reported
+	// finishing, which only a shell with OSC 133 integration can tell us.
+	CommandExit *int `json:"command_exit,omitempty"`
 }
 
 // NewArgs creates a session.
@@ -172,8 +172,7 @@ type SendArgs struct {
 	WaitMS  int64  `json:"wait_ms"`
 }
 
-// KillArgs terminates a session. Session is always required; the daemon never
-// infers a kill target from the active session.
+// KillArgs terminates a session.
 type KillArgs struct {
 	Session string `json:"session"`
 	Signal  string `json:"signal,omitempty"`
@@ -244,22 +243,8 @@ type LogResult struct {
 	AltScreen   bool        `json:"alt_screen"`
 }
 
-// ActiveArgs reports or changes the active session.
-type ActiveArgs struct {
-	Session string `json:"session,omitempty"`
-	Set     bool   `json:"set"`
-}
-
-// ActiveResult describes the active session, which may be absent.
-type ActiveResult struct {
-	Active        *Screen `json:"active,omitempty"`
-	LiveSessions  int     `json:"live_sessions"`
-	TotalSessions int     `json:"total_sessions"`
-}
-
 // ListResult is every session the daemon knows about, live and retained.
 type ListResult struct {
-	Active   string        `json:"active,omitempty"`
 	Sessions []SessionInfo `json:"sessions"`
 	// Retention is the configured log retention policy. It is on the wire
 	// because it decides when an ended session stops being listed at all,
