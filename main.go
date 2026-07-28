@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/sairaph/interactive-terminal-mcp/internal/app"
@@ -17,6 +18,7 @@ import (
 	"github.com/sairaph/interactive-terminal-mcp/internal/install"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 	"github.com/sairaph/interactive-terminal-mcp/internal/mcpserver"
+	"github.com/sairaph/interactive-terminal-mcp/internal/session"
 	"golang.org/x/term"
 )
 
@@ -36,6 +38,20 @@ func run(ctx context.Context, args []string) int {
 	}
 	if executable, err := os.Executable(); err == nil {
 		options.Executable = executable
+	}
+
+	// The interrupt helper is an internal re-exec, not a user-facing command.
+	// It must run before anything else touches configuration or the daemon.
+	if len(args) == 2 && args[0] == session.InterruptHelperCommand {
+		pid, convErr := strconv.Atoi(args[1])
+		if convErr != nil {
+			return 2
+		}
+		if err := session.RunInterruptHelper(pid); err != nil {
+			fmt.Fprintln(os.Stderr, "interactive-terminal-mcp:", err)
+			return 1
+		}
+		return 0
 	}
 
 	command, err := cli.Parse(args)
@@ -98,6 +114,10 @@ func runDaemon(ctx context.Context, runtime *bootstrap.Runtime, command cli.Comm
 	if command.Stop {
 		return stopDaemon(ctx, runtime, command, options)
 	}
+
+	// A console control event aimed at one session must never be able to take
+	// the daemon down, and with it every terminal it owns.
+	_ = session.IgnoreConsoleInterrupts()
 
 	server, err := daemon.Open(runtime.Paths, runtime.Config, version)
 	if err != nil {

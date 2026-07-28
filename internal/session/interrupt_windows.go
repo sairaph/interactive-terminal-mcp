@@ -4,7 +4,9 @@ package session
 
 import (
 	"fmt"
-	"sync"
+	"os"
+	"os/exec"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -14,8 +16,75 @@ import (
 // arrives as input, and a program that is not reading stdin never sees it.
 // Stopping a running command requires raising a real console control event.
 //
-// These three are absent from golang.org/x/sys/windows, so they are declared
-// here.
+// That event cannot be raised from this process. GenerateConsoleCtrlEvent
+// delivers CTRL_C_EVENT to every process attached to the console, and the only
+// way to reach a session's console is to attach to it -- which would put the
+// daemon on the receiving end of the event it is sending. Delivery is
+// asynchronous, so no amount of guarding around the call is reliable: the
+// daemon would take its own interrupt, cancel its root context, and shut down,
+// destroying every session it owns rather than the one command that was meant
+// to stop.
+//
+// So the event is raised by a short-lived helper process instead. It attaches,
+// signals, and exits. Nothing the daemon owns is ever attached to a session's
+// console.
+func (s *Session) interrupt() error {
+	pid := commandPID(s.command)
+	if pid <= 0 {
+		return fmt.Errorf("session has no running process to interrupt")
+	}
+
+	eventErr := raiseInterruptViaHelper(pid)
+	// Some programs read the interrupt character from stdin rather than
+	// handling a console event, and a duplicate ^C is harmless where the event
+	// already worked.
+	writeErr := s.Write([]byte{0x03})
+
+	if eventErr != nil && writeErr != nil {
+		return fmt.Errorf("interrupt: console event failed (%v) and writing ^C failed (%w)", eventErr, writeErr)
+	}
+	return nil
+}
+
+// raiseInterruptViaHelper runs this same binary as a helper that borrows the
+// target's console and raises Ctrl+C there.
+func raiseInterruptViaHelper(pid int) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate this executable: %w", err)
+	}
+
+	command := exec.Command(executable, interruptHelperCommand, fmt.Sprint(pid))
+	// DETACHED_PROCESS keeps the helper off this process's console, so it can
+	// attach to the session's own. No window is ever shown.
+	command.SysProcAttr = &windows.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+	}
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start the interrupt helper: %w", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		// The helper is bounded and should finish in milliseconds. If it does
+		// not, abandon it rather than holding up the caller.
+		_ = command.Process.Kill()
+		return fmt.Errorf("the interrupt helper did not finish")
+	}
+}
+
+// interruptHelperCommand is the hidden subcommand the helper runs as.
+const interruptHelperCommand = "__raise-interrupt"
+
+// InterruptHelperCommand is the argument that selects the helper, so the CLI
+// can route it without duplicating the string.
+const InterruptHelperCommand = interruptHelperCommand
+
 var (
 	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
 	procAttachConsole         = kernel32.NewProc("AttachConsole")
@@ -23,60 +92,44 @@ var (
 	procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
 )
 
-// consoleMu serializes console attachment. A process may be attached to only
-// one console at a time, so two sessions interrupting at once would fight over
-// a process-wide resource and signal the wrong terminal.
-var consoleMu sync.Mutex
-
-// interrupt raises Ctrl+C inside the session's pseudo-console.
+// RunInterruptHelper raises Ctrl+C on the console of the given process.
 //
-// The daemon runs detached and owns no console of its own, which is what makes
-// this possible: it can borrow the child's console, raise the event there, and
-// give it back. The event is sent to group 0, meaning every process attached to
-// that console, because CTRL_C_EVENT cannot be aimed at a single group.
-//
-// The interrupt character is still written afterwards. Some programs read it
-// from stdin rather than handling a console event, and a duplicate ^C is
-// harmless where the event already worked.
-func (s *Session) interrupt() error {
-	pid := commandPID(s.command)
+// This runs in its own process, so the fact that it receives the event too is
+// harmless; it ignores it and exits. Nothing else is affected.
+func RunInterruptHelper(pid int) error {
 	if pid <= 0 {
-		return fmt.Errorf("session has no running process to interrupt")
+		return fmt.Errorf("a process id is required")
 	}
 
-	eventErr := s.raiseConsoleInterrupt(uint32(pid))
-	writeErr := s.Write([]byte{0x03})
-
-	// Either route reaching the program is enough. Only report failure when
-	// both were refused, so a program that reads ^C from stdin still counts.
-	if eventErr != nil && writeErr != nil {
-		return fmt.Errorf("interrupt: console event failed (%v) and writing ^C failed (%w)", eventErr, writeErr)
+	// Ignore the event before raising it, and never restore. This process
+	// exists only to send it.
+	if err := ignoreCtrlC(true); err != nil {
+		return fmt.Errorf("suspend Ctrl+C handling: %w", err)
 	}
-	return nil
-}
 
-func (s *Session) raiseConsoleInterrupt(pid uint32) error {
-	consoleMu.Lock()
-	defer consoleMu.Unlock()
-
-	// Detach from any console first; AttachConsole fails if one is held.
 	freeConsole()
-	if err := attachConsole(pid); err != nil {
-		return fmt.Errorf("attach to the session console: %w", err)
+	if err := attachConsole(uint32(pid)); err != nil {
+		return fmt.Errorf("attach to the target console: %w", err)
 	}
 	defer freeConsole()
-
-	// The event goes to every process on that console, which now includes this
-	// one. Ignoring Ctrl+C for the duration stops the daemon killing itself.
-	if err := ignoreCtrlC(true); err != nil {
-		return fmt.Errorf("suspend this process's Ctrl+C handling: %w", err)
-	}
-	defer ignoreCtrlC(false) //nolint:errcheck // restoring is best effort
 
 	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_C_EVENT, 0); err != nil {
 		return fmt.Errorf("raise Ctrl+C: %w", err)
 	}
+	// Delivery is asynchronous; give it a moment to reach the target before
+	// this process detaches from the console.
+	time.Sleep(150 * time.Millisecond)
 	return nil
+}
+
+// IgnoreConsoleInterrupts makes this process immune to console control events.
+//
+// The daemon calls this at startup as a second line of defence. It runs
+// detached with no console of its own and is never meant to die from an
+// interrupt aimed at a session; a stray event must never take every terminal
+// down with it.
+func IgnoreConsoleInterrupts() error {
+	return ignoreCtrlC(true)
 }
 
 func attachConsole(pid uint32) error {

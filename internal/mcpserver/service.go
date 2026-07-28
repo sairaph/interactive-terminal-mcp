@@ -143,9 +143,9 @@ func (s *Service) registerTools() {
 		Name: "it_read",
 		Description: "Return the current screen of a terminal session. " +
 			"Use it to check on a command started earlier, or to see the current state of a full-screen program. " +
-			"Set wait to give a running command more time to finish before the screen is captured; " +
-			"the frontmatter reports settled: false when output was still arriving. " +
-			"For output that has already scrolled past, use it_tail.",
+			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
+			"prints as it works; a command that prints nothing looks finished immediately, and settled: true only ever " +
+			"means output was quiet. For output that has already scrolled past, use it_tail.",
 		InputSchema: readSchema(s.settings),
 	}, s.read)
 
@@ -163,8 +163,9 @@ func (s *Service) registerTools() {
 		Description: "End a terminal session. The session argument is always required: it is never taken from the active session, " +
 			"because ending the wrong terminal cannot be undone. " +
 			"Sends TERM by default and escalates to KILL if the process does not exit. " +
-			"INT asks the running command to stop and usually leaves the session usable; a program may refuse it, " +
-			"so the reply reports whether the command actually stopped. Find the session to end with it_list.",
+			"INT asks the running command to stop and leaves the session usable, and the reply reports whether it " +
+			"actually stopped; on Windows native shells often do not receive it, so TERM is the reliable option there. " +
+			"Find the session to end with it_list.",
 		InputSchema: killSchema(),
 	}, s.kill)
 
@@ -224,7 +225,8 @@ func waitProperty(settings config.Config, defaultSeconds int, purpose string) ma
 		"default": defaultSeconds,
 		"description": fmt.Sprintf(
 			"Seconds to wait for output to stop changing before capturing the screen; defaults to %d. "+
-				"This is a ceiling, not a pause: the call returns as soon as output goes quiet, so a large value costs nothing for a fast command. %s",
+				"This is a ceiling, not a pause: the call returns as soon as output goes quiet, so a large value costs "+
+				"nothing for a fast command, and a silent command returns straight away rather than being waited for. %s",
 			defaultSeconds, purpose),
 	}
 }
@@ -334,7 +336,7 @@ func readSchema(settings config.Config) map[string]any {
 			"type": "integer", "minimum": 5, "maximum": 1000,
 			"description": "Resize the terminal to this height before capturing.",
 		},
-		"wait": waitProperty(settings, 0, "Raise it when checking on a command that may still be running."),
+		"wait": waitProperty(settings, 0, "Useful for a command that prints as it works."),
 	})
 }
 
@@ -365,7 +367,9 @@ func killSchema() map[string]any {
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
 				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
-				"and the reply says whether the command stopped. KILL ends the session immediately and cannot be refused.",
+				"and the reply says whether the command stopped. On Windows a command started from a native shell " +
+				"often does not receive it, so treat TERM as the reliable way to stop work there. " +
+				"KILL ends the session immediately and cannot be refused.",
 		},
 	}, "session")
 }

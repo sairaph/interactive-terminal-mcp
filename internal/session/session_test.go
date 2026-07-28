@@ -568,3 +568,42 @@ func TestExplicitShellSelection(t *testing.T) {
 		t.Errorf("the error should list what is available, got %v", err)
 	}
 }
+
+// Interrupting must never take down anything but the session it targets.
+//
+// A console control event on Windows is delivered to every process attached to
+// the console, so raising it from the daemon put the daemon on the receiving
+// end of its own signal: it took os.Interrupt, cancelled its root context, and
+// destroyed every session it owned. The event is now raised from a helper
+// process for that reason. This test guards the property on every platform:
+// interrupting one session leaves the others alone.
+func TestInterruptLeavesOtherSessionsAlone(t *testing.T) {
+	first := newTestSession(t, Options{ID: "t-int001", Directory: t.TempDir(), Argv: []string{"sh"}})
+	second := newTestSession(t, Options{ID: "t-int002", Directory: t.TempDir(), Argv: []string{"sh"}})
+
+	for _, s := range []*Session{first, second} {
+		if err := s.Write([]byte("PS1='> '\n")); err != nil {
+			t.Fatal(err)
+		}
+		waitForScreen(t, s, "> ", 5*time.Second)
+	}
+
+	if err := first.Kill("INT", "test"); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if !second.Running() {
+		t.Error("interrupting one session must not stop another")
+	}
+	// The untouched session must still work.
+	if err := second.Write([]byte("echo untouched\n")); err != nil {
+		t.Fatalf("the other session should still accept input: %v", err)
+	}
+	waitForScreen(t, second, "untouched", 5*time.Second)
+
+	// And the interrupted one survives too: an interrupt is not a kill.
+	if !first.Running() {
+		t.Error("an interrupt should leave its own session usable")
+	}
+}
