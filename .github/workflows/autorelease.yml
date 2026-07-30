@@ -1,8 +1,14 @@
 name: autorelease
 
-# On every push to main, if the VERSION file names a version that has no
-# matching git tag yet, create the tag and build+publish a release for it.
-# Shipping a release is then just bumping VERSION and merging to main.
+# On every push to main, if the VERSION file names a version that has not been
+# released yet, tag it and build+publish a release. Shipping is then just
+# bumping VERSION and merging to main.
+#
+# What counts as "not released yet" is the absence of a published release, not
+# the absence of a tag. The tag has to be pushed before the build so the release
+# can attach to it, so a build that fails leaves a tag with nothing behind it.
+# Treating that as already-released made the version impossible to ship without
+# renaming it: the next push saw the tag, skipped, and reported success.
 #
 # The tag is pushed with GITHUB_TOKEN, which does NOT re-trigger the release
 # workflow, so release.yml is called directly (reusable) to avoid a race.
@@ -28,24 +34,30 @@ jobs:
           fetch-depth: 0 # tags and history are needed to decide
       - name: Decide whether to release
         id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
           if [ -z "$VERSION" ]; then echo "VERSION file is empty"; exit 1; fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "Tag v$VERSION already exists; nothing to release."
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION is already released; nothing to do."
             echo "should=false" >> "$GITHUB_OUTPUT"
           else
-            echo "VERSION=$VERSION has no tag v$VERSION yet -> will release."
+            echo "VERSION=$VERSION has no release yet -> will release."
             echo "should=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Create and push tag
+      - name: Point the tag at the commit being built
         if: steps.decide.outputs.should == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.decide.outputs.version }}"
-          git push origin "v${{ steps.decide.outputs.version }}"
+          # Forced because a previous attempt that failed to publish may have
+          # left the tag on an older commit. The release is built from this one,
+          # so the tag has to agree with the assets that will carry its name.
+          # Nothing referenced it: there is no release for this version yet.
+          git tag -f "v${{ steps.decide.outputs.version }}"
+          git push -f origin "v${{ steps.decide.outputs.version }}"
 
   release:
     name: build & publish
