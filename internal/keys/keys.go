@@ -249,6 +249,9 @@ func parseChord(token string) (Chord, error) {
 	if looksLikeKeyName(body) {
 		return chord, fmt.Errorf("unknown key %q in chord %q; use one of %s, or quote it as %q to type it literally", body, token, strings.Join(NamedKeys(), ", "), body)
 	}
+	if suggestion, ok := modifierNotation(body); ok {
+		return chord, fmt.Errorf("chord %q is a modifier written the way tmux, emacs, and screen write one; here it is %s, or quote it as %q to type those characters literally", token, suggestion, body)
+	}
 	if chord.Modifier != 0 {
 		return chord, fmt.Errorf("modifiers cannot be applied to the multi-character run %q in chord %q; apply them to a single key instead", body, token)
 	}
@@ -570,4 +573,78 @@ func (c Chord) String() string {
 		fmt.Fprintf(&out, "*%d", c.Repeat)
 	}
 	return out.String()
+}
+
+// Typed returns the characters a terminal would echo for these chords.
+//
+// Only unmodified printable input is included. A named key sends an escape
+// sequence rather than the letters of its name, and a modified one sends a
+// control byte, so neither can be mistaken for a result on screen; a plain
+// literal or rune can, and that is what a later wait has to discount.
+func Typed(chords []Chord) string {
+	var out strings.Builder
+	for _, c := range chords {
+		if c.Modifier != 0 {
+			continue
+		}
+		var piece string
+		switch c.Kind {
+		case KindLiteral:
+			piece = c.Literal
+		case KindRune:
+			piece = string(c.Rune)
+		default:
+			continue
+		}
+		for i := 0; i < c.Repeat; i++ {
+			out.WriteString(piece)
+		}
+	}
+	return out.String()
+}
+
+// otherNotations maps the modifier prefixes other tools use to this one's
+// spelling. Every one of these is something a person or an agent reaches for
+// out of habit from tmux, emacs, screen, or a vim tutorial.
+var otherNotations = map[string]string{
+	"C": "CTRL", "CTRL": "CTRL", "CONTROL": "CTRL",
+	"M": "ALT", "META": "ALT", "A": "ALT", "ALT": "ALT",
+	"S": "SHIFT", "SHIFT": "SHIFT",
+}
+
+// modifierNotation recognises a modifier chord written in another tool's
+// spelling and returns this tool's, so the caller is corrected rather than
+// obeyed literally.
+//
+// Without this, "C-c" is punctuation as far as the parser is concerned, and a
+// token that is not shaped like a key name is typed as written. The failure is
+// silent and lands in whatever program is on screen: at a shell it types three
+// stray characters, in vim it edits the file. The rule is deliberately narrow
+// -- a known modifier prefix, then one character or a key this tool names --
+// so that ":wq", "--force", "x-ray", and "git status" stay literal text, which
+// is what a caller who wrote them meant.
+func modifierNotation(body string) (string, bool) {
+	if rest, ok := strings.CutPrefix(body, "^"); ok {
+		if utf8.RuneCountInString(rest) == 1 {
+			return "CTRL+" + strings.ToUpper(rest), true
+		}
+		return "", false
+	}
+	index := strings.IndexByte(body, '-')
+	if index <= 0 {
+		return "", false
+	}
+	canonical, ok := otherNotations[strings.ToUpper(body[:index])]
+	if !ok {
+		return "", false
+	}
+	rest := body[index+1:]
+	if rest == "" {
+		return "", false
+	}
+	upper := strings.ToUpper(rest)
+	if _, named := Aliases[upper]; named || utf8.RuneCountInString(rest) == 1 {
+		return canonical + "+" + upper, true
+	}
+	return "", false
 }

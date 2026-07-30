@@ -195,6 +195,8 @@ blank_lines_trimmed: 17
 | `title` | Last title set by the program through OSC 0/2, when any |
 | `settled` | Output stopped changing before the wait budget expired. Absent when the call did not wait long enough to establish anything |
 | `busy` | A command still holds the terminal. Absent where that cannot be established |
+| `shell_ready` | Present only as `false`, meaning the shell has not reached a prompt yet, so nothing sent to it has run. An idle shell and a starting one look identical without it |
+| `startup_ms` | How long the shell took to reach its first prompt. Set by `it_new`, the only call that waited for it |
 | `waited_ms` | Milliseconds actually spent waiting |
 | `logs_retained` | Whether this session's log survives the session ending |
 | `exit_code` | Present only once the session has exited |
@@ -210,6 +212,18 @@ configured `default_wait_seconds`, which is what that setting is for; every
 tool that waits uses the same one. `wait: 0` means look now: the screen is
 captured as it stands, and `wait_for` reports whether the text is already
 there rather than waiting for it to arrive.
+
+On `it_new`, `wait` covers the shell's own startup as well as the command. A
+shell with heavy startup files takes real time to reach a prompt -- five to
+eight seconds for a bash that initialises conda -- and until it does, nothing
+typed into it has run. That time is spent inside the caller's budget rather
+than added to it: a client gives up on a tool call eventually, and a reply that
+arrives after it has is worse than one that says the shell was slow. What the
+startup cost is reported as `startup_ms`, and `shell_ready: false` says the
+shell had still not prompted when the budget ran out. The command is not lost
+in that case -- the terminal buffers it exactly as it would buffer a paste --
+it simply has not run yet, and the reply says so instead of reporting that it
+finished without printing anything.
 
 `settled: false` in the frontmatter means the wait budget expired while output
 was still arriving. The body then tells the agent to call `it_read` again with
@@ -261,14 +275,26 @@ because they come from the shell on the far side.
 `wait_for` is exact. The wait ends the moment the given text appears, and what
 counts as an appearance is defined rather than guessed:
 
-- Text already on the screen when a call that types nothing begins (`it_read`)
-  is a match, because that call is asking whether the text is there.
 - Text already on the screen before `it_send` types its input is not a match.
   It was not produced by this call.
 - The echo of the input `it_send` types is not a match either, which is what
   makes `it_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` work.
   The occurrences the typed line itself contains are discounted, so the wait
   ends on the output rather than on the command line.
+- A call that types nothing (`it_read`) is judged by the rules of the send
+  before it. The session remembers the last input typed into it and the screen
+  as it stood immediately before, and both are discounted. So polling with
+  `it_read({"wait_for": "BUILT"})` after that same `it_send` waits for the
+  output, not for the command line still sitting on screen.
+
+  This is the one rule that reads as a restriction rather than a convenience,
+  and it is the one that matters most in practice: an agent that starts a
+  command and then polls for its marker is the normal way these tools get used,
+  and the echo of that command satisfies a naive screen test from the moment it
+  is typed. `it_read` used to return `matched: true` after 0 ms for exactly
+  that sequence, which told the agent a build had finished before it started.
+  A session nobody has typed into has nothing to discount, and `wait_for` there
+  is the plain question of whether the text is on the screen.
 
 Nothing is excluded on the basis of when it arrived, so a command that finishes
 in a millisecond is matched exactly as a slow one is.
@@ -422,7 +448,12 @@ the child, then waits for the settle interval so a redrawing TUI is captured
 after the redraw rather than during it.
 
 If the session has exited, the final screen is returned with `running: false`
-and `exit_code`, and the body points at `it_tail` for what scrolled away.
+and `exit_code`, and the body points at `it_tail` for what scrolled away. The
+screen is copied out of the emulator when the session is retired and kept with
+the entry, so this holds for the rest of the retention window and not merely
+until the daemon reclaims the terminal. Only a session inherited from an
+earlier daemon has no screen to show, and that is what the error about a
+previous daemon now means.
 
 ### `it_send`
 
@@ -469,6 +500,7 @@ keys: 'i; "hello world"; ESC'
 | Literal character | `A` `c` `9` `/` | Any single printable character. |
 | Literal string | `"some text"` | Double-quoted run typed verbatim, for mixing text into a key sequence. |
 | Bare run | `:wq` `--force` | A multi-character run is typed verbatim when it could not be a key name. A run of only letters, digits, and underscores must be a key name or be quoted, so a typo like `PAGEUPP` is reported instead of silently typed. |
+| Another tool's modifier | `C-c` `M-x` `^C` | Reported, with this tool's spelling for the same chord. These are punctuation as far as the grammar is concerned, so they used to be typed as characters -- three stray keystrokes at a shell, an edit inside vim. Quote them to type them literally. |
 | Repeat | `<chord>*<n>` | `1`–`1000`, e.g. `DOWN*5`. |
 
 Encoding follows the terminal's current modes rather than a fixed table. When

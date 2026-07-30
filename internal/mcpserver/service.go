@@ -132,6 +132,9 @@ func (s *Service) registerTools() {
 			"Pass command to have it typed in and run straight away, the way you would type it yourself; when it " +
 			"finishes the shell is still there, so you can answer a prompt, run something else, or read the output. " +
 			"The call returns without waiting for it, so long builds and servers are fine too. " +
+			"A shell can take seconds to reach a prompt on a machine with heavy startup files; that time is " +
+			"reported as startup_ms and comes out of wait rather than being added to it, and shell_ready: false " +
+			"means the command is queued rather than finished. " +
 			"Type into it later with it_send, and read it with it_read.",
 		InputSchema: newSchema(s.settings),
 	}, s.new)
@@ -143,7 +146,9 @@ func (s *Service) registerTools() {
 			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
 			"prints as it works; settled: true only ever means output was quiet, which is what a command that " +
 			"prints nothing looks like from the moment it starts. Prefer busy. " + busyPhrase() +
-			" wait_for is exact. command_exit, where the shell reports it, is the status of the last command " +
+			" shell_ready: false means the shell is still running its startup files, so nothing sent to it has " +
+			"run yet however quiet the screen looks; it is queued and runs when the shell prompts. " +
+			"wait_for is exact. command_exit, where the shell reports it, is the status of the last command " +
 			"that finished, which is not necessarily the one you just started. " +
 			"For output that has already scrolled past, use it_tail.",
 		InputSchema: readSchema(s.settings),
@@ -229,7 +234,12 @@ func pageProperty() map[string]any {
 // only looks at it, because what counts as a match differs: the shell prints
 // back what it is given, and that echo is not a result.
 func waitForProperty(typed bool) map[string]any {
-	rule := "Text already on the screen counts, so the call returns at once if what you are waiting for is there."
+	// A call that only reads is judged by the same rules as the send before it.
+	// Its own occurrences are the echo of whatever was typed last, which is on
+	// screen from the moment it is typed -- so without this a poll for a marker
+	// its own command line contains matched instantly, every time.
+	rule := "Neither the echo of the last input typed into this session nor text that was already on the screen " +
+		"when it was typed counts as a match, so polling for a word your command contains works as expected."
 	if typed {
 		rule = "Neither text already on the screen nor the echo of the input this call types counts as a match, " +
 			"so waiting for a word your own command contains works as expected."
@@ -305,8 +315,12 @@ func newSchema(settings config.Config) map[string]any {
 		"shell":    shellProperty(),
 		"cols":     colsProperty(settings),
 		"rows":     rowsProperty(settings),
-		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a shell that is slow to start."),
-		"wait_for": waitForProperty(false),
+		"wait": waitProperty(settings, settings.DefaultWaitSeconds,
+			"It covers the shell's own startup as well as the command, so raise it for a shell that is slow to "+
+				"start; the reply reports startup_ms and shell_ready."),
+		// it_new types the command it was given, so the same rule applies here
+		// as to it_send.
+		"wait_for": waitForProperty(true),
 	})
 }
 

@@ -50,7 +50,7 @@ func sampleSession() ipc.SessionInfo {
 
 func TestScreenResultShape(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"lael@host:~/project$ make", "  CC   src/parser.o"},
 		Cursor:  [2]int{3, 1}, Settled: true, Observed: true, WaitedMS: 820,
 	}
@@ -80,7 +80,7 @@ func TestScreenResultShape(t *testing.T) {
 // may still be running and the output may be incomplete.
 func TestUnsettledScreenWarnsAndOffersARetry(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"  CC   src/render.o"},
 		Cursor:  [2]int{1, 1}, Settled: false, Observed: true,
 		WaitedMS: 5000, BudgetMS: 10000,
@@ -392,7 +392,7 @@ func TestErrorResultShape(t *testing.T) {
 // break out of the code block.
 func TestFencesSurviveHostileOutput(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"~~~", "~~~~~ not a real fence", "still inside"},
 		Settled: true, Observed: true,
 	}
@@ -680,7 +680,7 @@ func TestListDescriptionMatchesWhatListReturns(t *testing.T) {
 // finished is what made a caller stop reading a command that was still going.
 func TestBusyTerminalIsReportedDespiteQuietOutput(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"lael@host:~/project$ sleep 15"},
 		Settled: true, Observed: true, WaitedMS: 300, BudgetMS: 5000,
 		Busy: true, BusyKnown: true,
@@ -699,7 +699,7 @@ func TestBusyTerminalIsReportedDespiteQuietOutput(t *testing.T) {
 // saying so is what makes the busy field worth reading at all.
 func TestIdleTerminalIsReportedWithoutAWarning(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"lael@host:~/project$"},
 		Settled: true, Observed: true, WaitedMS: 260, BudgetMS: 5000,
 		Busy: false, BusyKnown: true,
@@ -734,7 +734,7 @@ func TestBusyIsNotReportedForAFullScreenProgram(t *testing.T) {
 // still arriving" states the opposite of what happened.
 func TestAnUnobservedScreenSaysNothingWasWaitedFor(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"lael@host:~/project$"},
 		Settled: false, Observed: false, WaitedMS: 30,
 	}
@@ -755,7 +755,7 @@ func TestAnUnobservedScreenSaysNothingWasWaitedFor(t *testing.T) {
 // without printing that text, which is the opposite of what this used to claim.
 func TestWaitForMissOverAnIdleTerminalDoesNotClaimTheCommandIsRunning(t *testing.T) {
 	screen := ipc.Screen{
-		Session:   sampleSession(),
+		Session:   sampleSession(), ShellReady: true,
 		Lines:     []string{"lael@host:~/project$ ./build.sh", "done", "lael@host:~/project$"},
 		Settled:   false,
 		Observed:  true,
@@ -777,7 +777,7 @@ func TestWaitForMissOverAnIdleTerminalDoesNotClaimTheCommandIsRunning(t *testing
 // case where waiting again is the right advice.
 func TestWaitForMissOverABusyTerminalSaysToKeepWaiting(t *testing.T) {
 	screen := ipc.Screen{
-		Session:   sampleSession(),
+		Session:   sampleSession(), ShellReady: true,
 		Lines:     []string{"lael@host:~/project$ ./build.sh"},
 		Observed:  true,
 		WaitedFor: "BULK-DONE", Matched: false,
@@ -897,7 +897,7 @@ func TestNewGuidanceOffersKeystrokesToAFullScreenProgram(t *testing.T) {
 // not have arrived yet is filler over a fact the reply already carries.
 func TestAnUnobservedScreenOverAnIdleTerminalStaysQuiet(t *testing.T) {
 	screen := ipc.Screen{
-		Session: sampleSession(),
+		Session: sampleSession(), ShellReady: true,
 		Lines:   []string{"lael@host:~/project$"},
 		Settled: false, Observed: false, WaitedMS: 30,
 		Busy: false, BusyKnown: true,
@@ -997,5 +997,89 @@ func TestSeveralMissingArgumentsReadAsASentence(t *testing.T) {
 	got := cleanValidationMessage(`validating "arguments": required: missing properties: ["session","lines"]`)
 	if got != "session and lines are required" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// --- a shell that has not started yet ---------------------------------------
+
+// A shell running its startup files has nothing in the foreground, exactly like
+// a shell that has finished a command. Reading the second from the first is how
+// a session announced that a command had "most likely finished" eight seconds
+// before the shell was ready to run it.
+func TestAStartingShellIsNotReportedAsAFinishedCommand(t *testing.T) {
+	screen := ipc.Screen{
+		Session:   sampleSession(),
+		Lines:     []string{"echo RACE-MARKER"},
+		Observed:  true,
+		WaitedFor: "RACE-MARKER", Matched: false,
+		WaitedMS: 6000, BudgetMS: 6000,
+		Busy: false, BusyKnown: true,
+		ShellReady: false,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "most likely finished") {
+		t.Errorf("a shell that has not prompted cannot have finished anything:\n%s", body)
+	}
+	if !strings.Contains(body, "has not reached a prompt yet") {
+		t.Errorf("the reply should say the shell is still starting:\n%s", body)
+	}
+	if !strings.Contains(body, "queued") {
+		t.Errorf("the reply should say the typed command still runs:\n%s", body)
+	}
+	if !strings.Contains(body, "shell_ready: false") {
+		t.Errorf("frontmatter should carry the machine-readable form:\n%s", body)
+	}
+}
+
+// The same state without a wait_for still has to be distinguishable from an
+// idle shell, because the screen is empty in both cases.
+func TestAStartingShellExplainsAnEmptyScreen(t *testing.T) {
+	screen := ipc.Screen{
+		Session:  sampleSession(),
+		Lines:    []string{},
+		Observed: true, Settled: true, WaitedMS: 2000,
+		Busy: false, BusyKnown: true,
+		ShellReady: false,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if !strings.Contains(body, "not started rather than nothing to show") {
+		t.Errorf("an empty screen during startup should say which it is:\n%s", body)
+	}
+}
+
+// Once the shell is up, none of that appears: the flag is only worth reporting
+// when it is false, and a ready session should read exactly as it did before.
+func TestAReadyShellReportsNothingExtra(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(), ShellReady: true,
+		Lines:   []string{"lael@host:~/project$"},
+		Settled: true, Observed: true, WaitedMS: 260,
+		Busy: false, BusyKnown: true,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if strings.Contains(body, "shell_ready") {
+		t.Errorf("a ready shell should not carry the flag at all:\n%s", body)
+	}
+	if strings.Contains(body, "has not reached a prompt") {
+		t.Errorf("a ready shell should not be described as starting:\n%s", body)
+	}
+}
+
+// Startup that cost real time is reported rather than absorbed, so a caller can
+// see why a wait it set aside for a command went on the shell instead.
+func TestStartupCostIsReportedOnCreation(t *testing.T) {
+	screen := ipc.Screen{
+		Session: sampleSession(), ShellReady: true,
+		Lines:   []string{"lael@host:~/project$ echo hi", "hi"},
+		Settled: true, Observed: true,
+		WaitedMS: 8200, BudgetMS: 30000, StartupMS: 8034,
+	}
+	body := text(t, successResult(screenFront(screen), screenBody(screen, readGuidance(screen))))
+
+	if !strings.Contains(body, "startup_ms: 8034") {
+		t.Errorf("creation should report what the shell's own startup cost:\n%s", body)
 	}
 }

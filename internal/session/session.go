@@ -51,6 +51,12 @@ type Options struct {
 	ScrollbackLines    int
 	RawLogMaxBytes     int64
 	TranscriptMaxLines int
+
+	// StartupBudget is how long the caller is willing to block, and so how much
+	// of their time may be spent waiting for the shell to reach a prompt before
+	// a command is typed into it. Zero means the caller asked not to wait, and
+	// the shell gets only promptGrace.
+	StartupBudget time.Duration
 }
 
 // Session is one live terminal.
@@ -99,6 +105,35 @@ type Session struct {
 	// caller runs it rather than the constructor so the typing and the wait that
 	// follows it are one operation.
 	entry string
+
+	// marksPrompts records that the shell was started with an integration
+	// script, so it will mark its first prompt. Without one, a shell that has
+	// printed nothing is indistinguishable from a shell that is still starting,
+	// and readiness below is a guess rather than a fact.
+	marksPrompts bool
+
+	// startedAt and readyAt bracket the shell's own startup. readyAt is the
+	// first prompt mark where one is coming and the first byte otherwise; it is
+	// zero until then, which is what lets a caller be told that a command it
+	// asked for has not run yet rather than that it produced no output.
+	//
+	// Both keep their monotonic reading, so neither is stamped with UTC the way
+	// the metadata timestamps are. The difference between them is a duration
+	// reported next to one measured with time.Since, and a wall clock that
+	// steps -- which the machine this was found on does -- would otherwise make
+	// a shell appear to have spent longer starting than the whole call took.
+	startedAt time.Time
+	readyAt   time.Time
+
+	// lastInput is the most recent thing typed into this session, and
+	// screenAtInput is the screen as it stood immediately before that. Together
+	// they are what makes wait_for exact on a later call: the first says which
+	// occurrences are the terminal echoing the caller back, the second which
+	// were already there. Without them a poll matches the command it is waiting
+	// on the moment it is typed.
+	inputMu       sync.RWMutex
+	lastInput     string
+	screenAtInput string
 }
 
 // Entry is the command line this session was asked to run, to be typed into the
@@ -119,7 +154,7 @@ func New(options Options) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	startup = applyIntegration(startup, shell, options)
+	startup, marksPrompts := applyIntegration(startup, shell, options)
 	cwd := options.Cwd
 	if cwd == "" {
 		cwd, _ = os.Getwd()
@@ -169,6 +204,9 @@ func New(options Options) (*Session, error) {
 		pumpDone:     make(chan struct{}),
 		done:         make(chan struct{}),
 		lastActivity: now,
+
+		marksPrompts: marksPrompts,
+		startedAt:    time.Now(),
 	}
 	session.metadata = Metadata{
 		ID: options.ID, Name: options.Name, Command: display,
@@ -189,46 +227,198 @@ func New(options Options) (*Session, error) {
 	// of making a session behaves the same, and so that a session is never
 	// handed back with a command pending that nobody entered.
 	if entry != "" {
-		session.enterCommand(entry)
+		session.enterCommand(entry, options.StartupBudget)
 	}
 	return session, nil
 }
 
-// promptGrace bounds the wait for a shell to draw something before a command is
-// typed into it.
+// promptGrace bounds the wait for a shell that cannot prove it has prompted.
 //
-// It is short on purpose. The terminal's input buffer holds anything written
-// before the shell reads it, so typing early costs nothing but the echo landing
-// above the prompt rather than after it -- the same thing that happens when a
-// person pastes into a slow terminal. Waiting long enough to be certain is the
-// worse trade: a shell whose startup files read from stdin prints nothing at
-// all until something is typed, so any wait for a prompt on such a machine
-// burns its whole budget and then types anyway.
+// It is short on purpose, and it is a guess rather than a signal: the first
+// byte a shell writes is usually its prompt, but a shell whose startup files
+// read from stdin writes nothing at all until something is typed, so waiting
+// for one would burn the whole budget and then type anyway. The terminal's
+// input buffer holds whatever is written early, so typing too soon still runs
+// the command.
+//
+// Where the shell was given an integration script this is not used: a prompt
+// mark is proof, and startupLimit below waits for it. That distinction matters
+// more than it looks. Typing into a shell that is not reading yet leaves the
+// echo above the prompt to be drawn a second time by the line editor, can have
+// a multi-line paste read as separate commands by a shell that has not enabled
+// bracketed paste, and leaves anything waiting on the command looking at a
+// terminal with nothing running in it.
 const promptGrace = 750 * time.Millisecond
 
-// enterCommand gives the shell a moment to draw, then types the command.
+// startupCap bounds how long a shell that marks its prompts is given to reach
+// one, however much time the caller offered.
 //
-// What it waits for is the first byte, not quiet. A prompt is the first thing a
-// shell prints, so that is the cheapest signal that it is up and the echo will
-// land in a sensible place; waiting for quiet on top of it would add the settle
-// interval to the creation of every session that runs something.
-func (s *Session) enterCommand(commandLine string) {
-	deadline := time.After(promptGrace)
-	for s.OutputBytes() == 0 {
+// A shell that has not prompted within this is not slow, it is stuck -- on a
+// network home directory, a hung tool in an rc file, a prompt asking something.
+// Typing then is not worse than waiting: the input sits in the terminal's
+// buffer either way, and the caller gets a session back rather than a tool call
+// that spends its whole budget on a shell that was never going to answer.
+const startupCap = 10 * time.Second
+
+// integrationFallback is how long a shell that was given an integration script
+// is believed to be starting on the strength of a missing mark alone. It is
+// longer than startupCap so it can never decide a session that is merely slow.
+const integrationFallback = 15 * time.Second
+
+// startupLimit is how long to wait for a prompt before typing anyway.
+//
+// Only a shell started with integration can prove it has reached a prompt, so
+// only that case is worth waiting on; anywhere else the wait is the old guess
+// at a first byte. A caller who asked not to block gets the guess too, because
+// spending ten seconds on a shell is not something to do with time nobody
+// offered.
+func (s *Session) startupLimit(budget time.Duration) time.Duration {
+	if !s.marksPrompts || budget <= 0 {
+		return promptGrace
+	}
+	if budget < startupCap {
+		return budget
+	}
+	return startupCap
+}
+
+// Ready reports whether the shell has reached the point where it reads a
+// command, and latches the moment it did.
+//
+// The distinction this draws is the one that matters to a caller waiting for
+// output: a shell still running its startup files has no command in the
+// foreground, exactly like a shell whose command has finished. Reading those
+// two as the same state is what let a session report that a command had "most
+// likely finished" eight seconds before it started.
+func (s *Session) Ready() bool {
+	s.mu.RLock()
+	ready := !s.readyAt.IsZero()
+	started := s.startedAt
+	s.mu.RUnlock()
+	if ready {
+		return true
+	}
+
+	// The terminal's own lock is taken here, so s.mu must not be held.
+	var arrived bool
+	if s.marksPrompts {
+		arrived = s.term.Commands().Integrated
+		// Installing the script is not the same as the shell running it: a
+		// shell can be started in a mode that ignores the file, and then no
+		// mark is ever coming. Waiting on one forever would leave a working
+		// terminal permanently described as still starting, which is a worse
+		// error than the one this whole mechanism exists to prevent. After long
+		// enough, a shell that is plainly talking is taken at its word.
+		if !arrived && s.OutputBytes() > 0 && time.Since(started) > integrationFallback {
+			arrived = true
+		}
+	} else {
+		arrived = s.OutputBytes() > 0
+	}
+	if !arrived {
+		return false
+	}
+
+	s.mu.Lock()
+	if s.readyAt.IsZero() {
+		s.readyAt = time.Now()
+	}
+	s.mu.Unlock()
+	return true
+}
+
+// Startup reports how long the shell took to reach a prompt. The second result
+// is false while it has not.
+func (s *Session) Startup() (time.Duration, bool) {
+	if !s.Ready() {
+		return 0, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.readyAt.Sub(s.startedAt), true
+}
+
+// awaitReady blocks until the shell is ready, the budget runs out, or the
+// session ends.
+func (s *Session) awaitReady(budget time.Duration) {
+	deadline := time.After(s.startupLimit(budget))
+	for !s.Ready() {
 		activity := s.activityChannel()
 		select {
 		case <-activity:
 		case <-deadline:
-			// Nothing drawn. The shell may simply be slow, or its startup files
+			// Out of time. The shell may simply be slow, or its startup files
 			// may be waiting on stdin themselves, in which case what is typed
 			// next is what unblocks it.
+			return
 		case <-s.processDone:
+			return
 		}
-		break
 	}
+}
+
+// enterCommand waits for the shell to be ready, then types the command.
+//
+// Typing early is not an error -- the terminal's input buffer holds whatever
+// arrives before the shell reads it, which is why this worked at all on a
+// machine whose bash takes eight seconds to start. It is just worse: the echo
+// lands above the prompt and is then drawn a second time by the line editor, a
+// multi-line paste can be read as separate commands by a shell that has not yet
+// enabled bracketed paste, and anything waiting on the command sees a terminal
+// with nothing running in it. Waiting where a prompt can be proven avoids all
+// three; where it cannot, this is the same first-byte guess it always was.
+func (s *Session) enterCommand(commandLine string, budget time.Duration) {
+	s.awaitReady(budget)
 	// A failure here leaves a usable shell with nothing typed into it, which is
 	// better than refusing to hand back a terminal that works.
 	_ = s.TypeCommand(commandLine)
+}
+
+// NoteInput records what is about to be typed, and the screen as it stands
+// before it is.
+//
+// Both halves are needed by a wait that runs on some later call. The input says
+// which occurrences on screen are the terminal echoing the caller back; the
+// screen before it says which were already there. A poll for a marker that its
+// own command line contains -- `make && echo DONE`, waited on with "DONE" --
+// matches the echo the instant it is typed without them.
+func (s *Session) NoteInput(text string) {
+	screen := s.term.MatchText()
+	s.inputMu.Lock()
+	s.lastInput = text
+	s.screenAtInput = screen
+	s.inputMu.Unlock()
+}
+
+// LastInput returns the input last typed into this session and the screen as it
+// stood immediately before.
+func (s *Session) LastInput() (input, before string) {
+	s.inputMu.RLock()
+	defer s.inputMu.RUnlock()
+	return s.lastInput, s.screenAtInput
+}
+
+// PollTarget builds a wait target for a caller that is writing nothing.
+//
+// A caller who types gives the rules for free: it knows what it sent and what
+// the screen held first. A caller who only reads knows neither, and asking the
+// screen alone makes the command being waited on satisfy the wait -- its echo
+// is on screen from the moment it is typed. The session remembers both, so a
+// poll is judged by the same rules as the send that preceded it: occurrences
+// the caller typed do not count, nor do occurrences that were already there.
+//
+// Where nothing has ever been typed -- a session someone attached to, a program
+// printing on its own -- there is nothing to discount and this is the plain
+// question of whether the text is on screen.
+func (s *Session) PollTarget(text string) WaitTarget {
+	target := WaitTarget{Text: text}
+	if !target.Wanted() {
+		return target
+	}
+	input, before := s.LastInput()
+	target.Echo = input
+	target.Baseline = strings.Count(flattenText(before), flattenText(text))
+	return target
 }
 
 // TypeCommand types a command line and submits it, exactly as a person would.
@@ -236,6 +426,7 @@ func (s *Session) enterCommand(commandLine string) {
 // Multi-line input goes through bracketed paste when the program has enabled
 // it, so an editor receives one paste rather than a sequence of commands.
 func (s *Session) TypeCommand(text string) error {
+	s.NoteInput(text)
 	if strings.ContainsAny(text, "\n\r") {
 		if err := s.WritePaste(strings.TrimRight(text, "\r\n")); err != nil {
 			return err

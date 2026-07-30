@@ -72,6 +72,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	}
 	directory := d.paths.SessionDir(id)
 
+	begun := time.Now()
 	live, err := session.New(session.Options{
 		ID: id, Name: name,
 		CommandLine: args.CommandLine, Argv: args.Argv,
@@ -81,6 +82,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 		ScrollbackLines:    settings.ScrollbackLines,
 		RawLogMaxBytes:     settings.RawLogMaxBytes,
 		TranscriptMaxLines: settings.TranscriptMaxLines,
+		StartupBudget:      time.Duration(args.WaitMS) * time.Millisecond,
 	})
 	if err != nil {
 		// The directory was created before the failure; leaving it behind
@@ -100,9 +102,28 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	// the terminal repeating it back.
 	target := session.WaitTarget{Text: args.WaitFor, Echo: live.Entry()}
 
-	settled := d.wait(ctx, live, args.WaitMS, target, settings)
+	// What the shell spent starting comes out of the caller's wait, not on top
+	// of it. A caller who asks to block for thirty seconds is stating what they
+	// can afford: their own client gives up on a tool call eventually, and a
+	// reply that arrives after it has is worse than a reply that says the shell
+	// was slow. Startup is reported instead, so the time is accounted for
+	// rather than merely spent.
+	remaining := args.WaitMS - time.Since(begun).Milliseconds()
+	if remaining < 0 {
+		remaining = 0
+	}
+	settled := d.wait(ctx, live, remaining, target, settings)
+
 	screen := d.screen(live, settled)
 	screen.WaitedFor = args.WaitFor
+	// The caller's frame, not the wait's: they asked for one call and blocked
+	// once, and splitting that into a startup they never asked about and a
+	// remainder would make every slow session look instant.
+	screen.WaitedMS = time.Since(begun).Milliseconds()
+	screen.BudgetMS = args.WaitMS
+	if startup, ok := live.Startup(); ok {
+		screen.StartupMS = startup.Milliseconds()
+	}
 	return screen, nil
 }
 
@@ -112,7 +133,7 @@ func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen,
 		return ipc.Screen{}, err
 	}
 	if item.live == nil {
-		return ipc.Screen{}, retainedScreenError(item)
+		return d.retainedScreen(item)
 	}
 	settings := d.registry.settingsSnapshot()
 
@@ -138,9 +159,10 @@ func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen,
 		}
 	}
 
-	// it_read writes nothing, so text already on the screen is exactly what the
-	// caller is asking about and matches at once.
-	settled := d.wait(ctx, item.live, args.WaitMS, session.WaitTarget{Text: args.WaitFor}, settings)
+	// it_read writes nothing, so what it is asking about is the screen as it
+	// stands -- minus the echo of whatever was typed last, which is not a
+	// result however plainly it is on screen.
+	settled := d.wait(ctx, item.live, args.WaitMS, item.live.PollTarget(args.WaitFor), settings)
 	screen := d.screen(item.live, settled)
 	screen.WaitedFor = args.WaitFor
 	return screen, nil
@@ -186,6 +208,13 @@ func (d *Daemon) handleSend(ctx context.Context, args ipc.SendArgs) (ipc.Screen,
 		}
 	}
 	if len(chords) > 0 {
+		// Keys are remembered as the characters they put on screen, so a later
+		// poll discounts them the same way it discounts typed text. Named and
+		// modified keys contribute nothing: what they send is an escape
+		// sequence or a control byte, never the letters of their name.
+		if !args.HasText {
+			live.NoteInput(keys.Typed(chords))
+		}
 		encoded := keys.Encode(chords, live.Modes())
 		if err := live.Write(encoded); err != nil {
 			return ipc.Screen{}, sendError(err, item)
@@ -214,6 +243,7 @@ func (d *Daemon) wait(ctx context.Context, live *session.Session, waitMS int64, 
 // it, so an editor receives one paste instead of a sequence of commands. A
 // trailing newline is not counted: it is the submission, not part of the text.
 func writeText(live *session.Session, text string, enter bool) error {
+	live.NoteInput(text)
 	body := text
 	trailing := strings.HasSuffix(body, "\n") || strings.HasSuffix(body, "\r")
 
@@ -347,7 +377,22 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 
 // retire closes a finished session and applies the retention policy.
 func (d *Daemon) retire(item *entry, settings config.Config, result *ipc.KillResult) {
+	// The screen is copied out before anything is closed. It is one terminal's
+	// worth of text, and keeping it is what lets a caller read how a session
+	// ended -- the error it died on is usually the last thing on it -- rather
+	// than being told only that it ended.
+	//
+	// Waiting for the drain first matters: the last output a dying command
+	// writes arrives after the process is gone, and a screen copied before it
+	// lands is missing exactly the part worth reading. Close does its own
+	// waiting, but it also closes the emulator, so this cannot be left to it.
+	var final *vterm.Snapshot
 	if item.live != nil {
+		wait, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		item.live.WaitFinalized(wait)
+		cancel()
+		snapshot := item.live.Snapshot()
+		final = &snapshot
 		item.live.Close()
 	}
 	if settings.LogRetention == config.RetentionOnClose {
@@ -365,6 +410,7 @@ func (d *Daemon) retire(item *entry, settings config.Config, result *ipc.KillRes
 		if current.live != nil {
 			current.metadata = current.live.Metadata()
 			current.live = nil
+			current.finalScreen = final
 		}
 		current.retainedAt = time.Now().UTC()
 	}
@@ -581,6 +627,7 @@ func (d *Daemon) screen(live *session.Session, settled session.SettleResult) ipc
 		Busy:              busy,
 		BusyKnown:         busyKnown,
 		CommandExit:       commandExit,
+		ShellReady:        live.Ready(),
 	}
 }
 
@@ -643,7 +690,29 @@ func (d *Daemon) describeSession(item *entry) ipc.SessionInfo {
 	return info
 }
 
+// retainedScreen answers a read of a session that is no longer live.
+//
+// A session that ended while this daemon was running kept its last screen, and
+// that is what a caller asking to read it wants: how it ended. Only a session
+// inherited from a previous daemon has nothing to show, and saying so is then
+// accurate rather than a stock explanation applied to both.
+func (d *Daemon) retainedScreen(item *entry) (ipc.Screen, error) {
+	if item.finalScreen == nil {
+		return ipc.Screen{}, retainedScreenError(item)
+	}
+	snapshot := *item.finalScreen
+	return ipc.Screen{
+		Session:           d.describeSession(item),
+		Lines:             snapshot.Lines,
+		Cursor:            snapshot.Cursor,
+		BlankLinesTrimmed: snapshot.BlankLinesTrimmed,
+	}, nil
+}
+
 // retainedScreenError explains that a session's screen is no longer in memory.
+//
+// This is now only reached for a session this daemon never ran, which is the
+// case the wording was always describing.
 func retainedScreenError(item *entry) error {
 	return &ipc.Error{
 		Code:    ipc.CodeSessionExited,

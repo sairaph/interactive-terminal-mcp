@@ -79,25 +79,31 @@ func integrationFor(shell Shell) (integrationSetup, bool) {
 // applyIntegration returns argv extended so the shell reports its command
 // boundaries, or the original argv unchanged.
 //
+// The second result says whether the script was actually installed. It matters
+// beyond bookkeeping: a shell started with integration is guaranteed to mark
+// its first prompt, which is the only proof this project has that a shell has
+// finished its startup files and is ready to read a command. Where the script
+// is absent, the absence of a mark means nothing.
+//
 // Every failure here is silent and harmless: the shell starts exactly as it
 // would have, and the tools fall back to watching output and the process
 // table. Nothing about a session depends on this succeeding.
-func applyIntegration(argv []string, shell Shell, options Options) []string {
+func applyIntegration(argv []string, shell Shell, options Options) ([]string, bool) {
 	if !options.Integrate {
-		return argv
+		return argv, false
 	}
 	setup, ok := integrationFor(shell)
 	if !ok || options.Directory == "" {
-		return argv
+		return argv, false
 	}
 	// The session directory is created here rather than waited for: the log
 	// store makes it too, but not until after the command has been built.
 	if err := os.MkdirAll(options.Directory, 0o700); err != nil {
-		return argv
+		return argv, false
 	}
 	path := filepath.Join(options.Directory, setup.filename)
 	if err := os.WriteFile(path, []byte(setup.contents), 0o600); err != nil {
-		return argv
+		return argv, false
 	}
-	return append(argv, setup.args(path)...)
+	return append(argv, setup.args(path)...), true
 }

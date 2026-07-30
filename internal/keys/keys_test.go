@@ -208,3 +208,62 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// A modifier written the way tmux and emacs write it is a near miss for this
+// tool's spelling, not a run of punctuation to type. Silently typing it is how
+// "C-\" ended up on a shell prompt as three characters while the caller waited
+// for a quit signal.
+func TestOtherModifierNotationsAreCorrectedNotTyped(t *testing.T) {
+	cases := []struct{ input, want string }{
+		{`C-\`, `CTRL+\`},
+		{"C-c", "CTRL+C"},
+		{"c-c", "CTRL+C"},
+		{"M-x", "ALT+X"},
+		{"Meta-x", "ALT+X"},
+		{"Ctrl-c", "CTRL+C"},
+		{"Alt-TAB", "ALT+TAB"},
+		{"^C", "CTRL+C"},
+		{"S-TAB", "SHIFT+TAB"},
+	}
+	for _, c := range cases {
+		_, err := Parse(c.input)
+		if err == nil {
+			t.Errorf("%q should be rejected rather than typed literally", c.input)
+			continue
+		}
+		if !contains(err.Error(), c.want) {
+			t.Errorf("error for %q should suggest %q, got %q", c.input, c.want, err)
+		}
+		if !contains(err.Error(), "quote it") {
+			t.Errorf("error for %q should offer quoting to type it literally, got %q", c.input, err)
+		}
+	}
+}
+
+// The correction must not swallow the punctuation runs the language types
+// verbatim on purpose. Every one of these is something an agent types at a
+// prompt or into an editor.
+func TestPunctuationRunsAreStillTypedLiterally(t *testing.T) {
+	for _, input := range []string{":wq", "--force", "-la", "x-ray", "e-mail", "git status", "C-3PO", "^foo"} {
+		chords, err := Parse(input)
+		if err != nil {
+			t.Errorf("%q should be typed literally, got error %v", input, err)
+			continue
+		}
+		if len(chords) != 1 || chords[0].Kind != KindLiteral || chords[0].Literal != input {
+			t.Errorf("%q should parse as one literal, got %+v", input, chords)
+		}
+	}
+}
+
+// Typed reports what a terminal would echo, which is what a later wait has to
+// discount. A named or modified key sends bytes that never appear as text.
+func TestTypedReportsOnlyVisibleCharacters(t *testing.T) {
+	chords, err := Parse(`"DONE"; ENTER; CTRL+C; x*3; PAGE_DOWN`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := Typed(chords), "DONExxx"; got != want {
+		t.Errorf("Typed: got %q, want %q", got, want)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/sairaph/interactive-terminal-mcp/internal/config"
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 	"github.com/sairaph/interactive-terminal-mcp/internal/session"
+	"github.com/sairaph/interactive-terminal-mcp/internal/vterm"
 )
 
 // idAlphabet is Crockford base32 without the characters that are easy to
@@ -33,6 +34,12 @@ type entry struct {
 	directory string
 	// retainedAt is when an exited session became eligible for cleanup.
 	retainedAt time.Time
+	// finalScreen is the last thing the session displayed, kept when the
+	// emulator behind it is released. A session that has ended is still worth
+	// reading -- the error a command failed with is usually the last thing on
+	// screen -- and without this the only answer available was that the screen
+	// no longer existed.
+	finalScreen *vterm.Snapshot
 }
 
 func (e *entry) id() string {

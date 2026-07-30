@@ -82,6 +82,20 @@ func newLiveService(t *testing.T) *mcp.ClientSession {
 
 func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) (string, bool) {
 	t.Helper()
+
+	// sh unless a test names a shell, for the same reason the session package
+	// does it: without one, every session here starts the developer's login
+	// shell and waits for their startup files. Measured under load on one
+	// machine, that bash took between 8 and 16 seconds to reach a prompt --
+	// most of the budget of a test that then expected 300 lines of output
+	// inside 20 seconds. What these tests are about is the tool layer, not
+	// whose dotfiles are installed.
+	if name == "it_new" {
+		if _, named := args["shell"]; !named {
+			args["shell"] = "sh"
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

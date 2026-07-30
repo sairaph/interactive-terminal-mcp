@@ -26,8 +26,25 @@ func newTestSession(t *testing.T, options Options) *Session {
 	// and the developer's own bash may take seconds to start -- conda alone
 	// costs ten on one machine here -- which would make every timeout a
 	// measurement of somebody's dotfiles.
-	if options.Shell == "" && len(options.Argv) == 0 {
+	//
+	// This used to exempt a test that named a program in Argv, which quietly
+	// undid it: a program is run through the machine's default shell, so the
+	// vim test was paying for conda before vim started at all. Measured under
+	// load on that machine, bash took 8.1s, 10.5s and 16.1s to reach a prompt
+	// while vim itself took 275ms -- so a 10s deadline meant for vim was really
+	// a bet on somebody's .bashrc, and it lost about one run in three.
+	if options.Shell == "" {
 		options.Shell = "sh"
+	}
+	// And a clean HOME, so no shell started here reads anyone's configuration.
+	// The bash integration script sources "$HOME/.bashrc" only when it exists,
+	// so a temporary home exercises every mark it emits and costs nothing: the
+	// same bash starts in 0.00s without dotfiles.
+	if _, set := options.Env["HOME"]; !set {
+		if options.Env == nil {
+			options.Env = map[string]string{}
+		}
+		options.Env["HOME"] = t.TempDir()
 	}
 	if options.Cols == 0 {
 		options.Cols = 80
@@ -414,7 +431,10 @@ func TestFullScreenEditorRoundTrip(t *testing.T) {
 		Argv: []string{"vim", "-u", "NONE", "-N", target},
 	})
 
-	// vim owns the alternate screen once it has drawn.
+	// vim owns the alternate screen once it has drawn. It reaches that in about
+	// 275ms whether the machine is idle or every core is busy, so ten seconds
+	// is not a tight bound -- it is the shell in front of it that used to make
+	// this fail, and the helper now starts a fast one.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !session.Snapshot().AltScreen {
 		time.Sleep(50 * time.Millisecond)
@@ -808,10 +828,17 @@ func TestInterruptReachesACommandInsideANestedTerminal(t *testing.T) {
 	// The quoting matters: the terminal echoes the command as it is typed, so a
 	// follow-up marker that survives quoting would be found on screen whether or
 	// not it ever ran. bash prints NOT-REACHED only if it reaches the echo.
-	if err := session.Write([]byte("sleep 300; echo NOT''-REACHED\n")); err != nil {
+	if err := session.Write([]byte("echo START''ED; sleep 300; echo NOT''-REACHED\n")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// Wait for proof the inner shell is running the command rather than sleeping
+	// a fixed interval and hoping. Interrupting before the sleep starts sends
+	// the signal into a shell with nothing in the foreground, the follow-up then
+	// runs, and the test reports that the interrupt failed -- which is how this
+	// failed once on a machine that was compiling at the time. STARTED is
+	// quoted in the input for the same reason as the marker below: the echo of
+	// the command line must not be mistaken for its output.
+	waitForScreen(t, session, "STARTED", 15*time.Second)
 
 	if err := session.Kill("INT", "test"); err != nil {
 		t.Fatalf("interrupt: %v", err)
@@ -888,7 +915,9 @@ func TestIntegratedShellReportsItsCommands(t *testing.T) {
 	}
 	session := newTestSession(t, Options{Shell: "bash", Integrate: true})
 
-	// A shell only reports once it has drawn a prompt.
+	// A shell only reports once it has drawn a prompt. The helper gives this
+	// bash a clean home, so reaching one costs milliseconds rather than the
+	// seconds a real user's startup files take.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) && !session.Commands().Integrated {
 		time.Sleep(50 * time.Millisecond)
@@ -937,5 +966,100 @@ func TestIntegrationIsOptionalAndSilent(t *testing.T) {
 	}
 	if !session.Running() {
 		t.Error("the session must survive a shell that cannot be integrated")
+	}
+}
+
+// A poll that runs after the typing is over must judge the screen by the same
+// rules the typing did. The echo of `echo MARKER` contains MARKER from the
+// moment it is drawn, so a read waiting for MARKER matched instantly and
+// reported a command finished before the shell had even run it.
+func TestPollTargetDiscountsTheEchoOfTheLastInput(t *testing.T) {
+	session := newTestSession(t, Options{})
+	waitForScreen(t, session, "$", 5*time.Second)
+
+	if err := session.TypeCommand("sleep 1; echo PROBE-MARKER"); err != nil {
+		t.Fatalf("TypeCommand: %v", err)
+	}
+	waitForScreen(t, session, "PROBE-MARKER", 5*time.Second)
+
+	// The text is plainly on screen at this point -- as the echo.
+	target := session.PollTarget("PROBE-MARKER")
+	rule := newEchoRule(flattenText(target.Text), flattenText(target.Echo), target.Baseline)
+	if rule.matches(session.term.MatchText()) {
+		t.Fatal("a poll must not match the echo of the command it is waiting on")
+	}
+
+	// And it must still match once the command actually prints it.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if rule.matches(session.term.MatchText()) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("a poll never matched the output the command printed")
+}
+
+// Text that was already on screen before the caller typed is not a result of
+// what they typed, however plainly it is visible.
+func TestPollTargetDiscountsWhatWasAlreadyOnScreen(t *testing.T) {
+	session := newTestSession(t, Options{})
+	waitForScreen(t, session, "$", 5*time.Second)
+
+	// Quoted so the echo of this line does not itself contain the marker: the
+	// wait below has to land after the command has printed, not as it is typed.
+	// Waiting on the unquoted form made this test flaky under -race, where the
+	// gap between echo and output is wide enough to catch -- which is the very
+	// confusion the code under test exists to prevent, reproduced in the test
+	// that was meant to prove it.
+	if err := session.TypeCommand("echo SETTLED''-ALREADY"); err != nil {
+		t.Fatalf("TypeCommand: %v", err)
+	}
+	waitForScreen(t, session, "SETTLED-ALREADY", 5*time.Second)
+
+	// A second, unrelated command. The earlier output is still on screen.
+	if err := session.TypeCommand("sleep 2"); err != nil {
+		t.Fatalf("TypeCommand: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	target := session.PollTarget("SETTLED-ALREADY")
+	if target.Baseline < 1 {
+		t.Fatalf("baseline should count the occurrences already on screen, got %d", target.Baseline)
+	}
+	rule := newEchoRule(flattenText(target.Text), flattenText(target.Echo), target.Baseline)
+	if rule.matches(session.term.MatchText()) {
+		t.Fatal("a poll must not match output that predates the input it follows")
+	}
+}
+
+// A session nobody has typed into has nothing to discount, and the question is
+// the plain one: is this text on the screen.
+func TestPollTargetWithNoInputAsksThePlainQuestion(t *testing.T) {
+	session := newTestSession(t, Options{})
+	waitForScreen(t, session, "$", 5*time.Second)
+
+	target := session.PollTarget("$")
+	if target.Echo != "" || target.Baseline != 0 {
+		t.Fatalf("nothing was typed, so nothing should be discounted: %+v", target)
+	}
+}
+
+// A shell is not ready the moment its process exists, and the difference is
+// what tells a caller that their command has not run rather than that it
+// printed nothing.
+func TestReadinessIsReportedAndTimed(t *testing.T) {
+	session := newTestSession(t, Options{})
+	waitForScreen(t, session, "$", 5*time.Second)
+
+	if !session.Ready() {
+		t.Fatal("a shell that has drawn its prompt is ready")
+	}
+	startup, ok := session.Startup()
+	if !ok {
+		t.Fatal("a ready shell should report how long it took")
+	}
+	if startup < 0 || startup > 10*time.Second {
+		t.Fatalf("implausible startup duration: %s", startup)
 	}
 }

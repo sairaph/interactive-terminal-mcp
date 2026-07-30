@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +17,14 @@ import (
 // newTestDaemon starts a daemon on a socket short enough for the kernel's
 // sun_path limit, which t.TempDir() alone does not guarantee.
 func newTestDaemon(t *testing.T) (*Daemon, *ipc.Client, config.Paths) {
+	t.Helper()
+	return newTestDaemonWithRetention(t, "")
+}
+
+// newTestDaemonWithRetention builds a daemon that keeps ended sessions around,
+// which is what a configured install does and what the default on_close policy
+// deliberately does not.
+func newTestDaemonWithRetention(t *testing.T, retention string) (*Daemon, *ipc.Client, config.Paths) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("these tests drive a POSIX shell")
@@ -38,6 +47,9 @@ func newTestDaemon(t *testing.T) (*Daemon, *ipc.Client, config.Paths) {
 	}
 	settings := config.Default()
 	settings.DaemonIdleShutdownSeconds = 0 // never idle out during a test
+	if retention != "" {
+		settings.LogRetention = retention
+	}
 	settings, err = normalizeForTest(settings)
 	if err != nil {
 		t.Fatal(err)
@@ -380,7 +392,7 @@ func TestEndedSessionsStayReadable(t *testing.T) {
 
 	var created ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
-		Name: "done", CommandLine: "echo finished-output", WaitMS: 4000,
+		Name: "done", Shell: "sh", CommandLine: "echo finished-output", WaitMS: 4000,
 	}, &created)
 	endSession(t, client, "done")
 
@@ -398,9 +410,13 @@ func TestRenameAndScrollback(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
 	var created ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
-		Rows: 8, CommandLine: "i=1; while [ $i -le 60 ]; do echo row-$i; i=$((i+1)); done",
-		WaitMS:  20000,
-		WaitFor: "row-60",
+		// sh, like every other session here: the command is POSIX, and leaving
+		// the shell unset hands the test whatever the developer's login shell
+		// is, along with however long their startup files take.
+		Rows: 8, Shell: "sh",
+		CommandLine: "i=1; while [ $i -le 60 ]; do echo row-$i; i=$((i+1)); done",
+		WaitMS:      20000,
+		WaitFor:     "row-60",
 	}, &created)
 
 	var info ipc.SessionInfo
@@ -662,5 +678,100 @@ func TestWaitForWithNoBudgetAnswersImmediately(t *testing.T) {
 		ipc.ReadArgs{Session: "quick", WaitFor: "ALREADY-HERE", WaitMS: 0}, &present)
 	if !present.Matched {
 		t.Error("text already on screen should match without waiting")
+	}
+}
+
+// A session that ends is still worth reading: how it ended is usually the last
+// thing on its screen. Releasing the emulator used to make that a hard error
+// explaining that the daemon had restarted, which it had not.
+func TestReadingAnEndedSessionReturnsItsFinalScreen(t *testing.T) {
+	_, client, _ := newTestDaemonWithRetention(t, "1h")
+
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "ends", Shell: "sh", CommandLine: "echo LAST-WORDS", WaitMS: 3000, WaitFor: "LAST-WORDS",
+	}, &created)
+
+	mustCall(t, client, ipc.OpSessionKill, ipc.KillArgs{Session: "ends", Signal: "TERM"}, &ipc.KillResult{})
+
+	var screen ipc.Screen
+	if err := client.Call(context.Background(), ipc.OpSessionRead, ipc.ReadArgs{Session: created.Session.ID}, &screen); err != nil {
+		t.Fatalf("reading an ended session should work, got %v", err)
+	}
+	if screen.Session.Running {
+		t.Error("the session should be reported as ended")
+	}
+	if !strings.Contains(strings.Join(screen.Lines, "\n"), "LAST-WORDS") {
+		t.Errorf("the final screen should be what the session last displayed, got %q", screen.Lines)
+	}
+}
+
+// The startup a shell spends on its own rc files comes out of the caller's
+// wait, not on top of it: their client gives up on a tool call eventually, and
+// a reply that arrives after that is worse than one that says the shell was
+// slow.
+func TestCreationDoesNotOverrunTheRequestedWait(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	begun := time.Now()
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "bounded", Shell: "sh", CommandLine: "sleep 30",
+		WaitMS: 1500, WaitFor: "NEVER-APPEARS",
+	}, &created)
+	elapsed := time.Since(begun)
+
+	// Generous headroom for a loaded CI box; the point is that it returns near
+	// the budget rather than at the budget plus a shell startup.
+	if elapsed > 6*time.Second {
+		t.Errorf("a 1.5s wait took %s; startup is being added on top of it", elapsed)
+	}
+	if !created.ShellReady {
+		t.Error("a shell that ran the command should be reported ready")
+	}
+}
+
+// A shell that has not reached a prompt has run nothing, and must not be
+// reported as a command that finished without printing anything.
+//
+// The shell here is slow by construction rather than by accident. This project
+// found the behaviour through a developer's own bash, which spends seconds in
+// conda before it prompts -- but a test that depends on whose machine it runs
+// on measures dotfiles, not code. Two seconds of sleep in a throwaway home
+// reproduces exactly the same state on any machine, every time.
+func TestASlowShellIsReportedAsStartingNotFinished(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is needed to exercise a shell with startup files")
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("sleep 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, client, _ := newTestDaemon(t)
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "slow", Shell: "bash", Env: map[string]string{"HOME": home},
+		CommandLine: "echo SLOW-OK", WaitMS: 1000, WaitFor: "SLOW-OK",
+	}, &created)
+
+	if created.ShellReady {
+		t.Error("a shell still two seconds from its prompt is not ready")
+	}
+	if created.Matched {
+		t.Error("nothing can have matched: the shell has not read the command yet")
+	}
+
+	// The command is queued, not lost. This is the half that makes the report
+	// above honest rather than merely cautious.
+	var screen ipc.Screen
+	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{
+		Session: "slow", WaitMS: 20000, WaitFor: "SLOW-OK",
+	}, &screen)
+	if !screen.Matched {
+		t.Errorf("the queued command should run once the shell prompts:\n%s", strings.Join(screen.Lines, "\n"))
+	}
+	if !screen.ShellReady {
+		t.Error("a shell that has run a command has plainly reached a prompt")
 	}
 }

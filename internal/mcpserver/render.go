@@ -101,6 +101,14 @@ type screenMetadata struct {
 	// that reports its own command boundaries.
 	CommandExit *int `yaml:"command_exit,omitempty"`
 
+	// ShellReady appears only when it is false, which is the only time it says
+	// anything: a shell that has not prompted yet has run nothing that was
+	// asked of it, whatever the screen and the busy flag look like.
+	ShellReady *bool `yaml:"shell_ready,omitempty"`
+	// StartupMS is how much of this call went on the shell starting rather than
+	// on the command. Session creation is the only call that can attribute it.
+	StartupMS int64 `yaml:"startup_ms,omitempty"`
+
 	Matched           *bool  `yaml:"matched,omitempty"`
 	WaitedFor         string `yaml:"waited_for,omitempty"`
 	WaitedMS          int64  `yaml:"waited_ms"`
@@ -136,6 +144,11 @@ func screenFront(screen ipc.Screen) screenMetadata {
 		front.Busy = &busy
 	}
 	front.CommandExit = screen.CommandExit
+	if info.Running && !screen.ShellReady {
+		ready := false
+		front.ShellReady = &ready
+	}
+	front.StartupMS = screen.StartupMS
 	if screen.WaitedFor != "" {
 		matched := screen.Matched
 		front.Matched = &matched
@@ -171,11 +184,12 @@ func screenBody(screen ipc.Screen, guidance []string) string {
 
 // waitNote says what the wait established, and no more than that.
 //
-// Three separate facts are kept apart here, because collapsing them is how a
+// Four separate facts are kept apart here, because collapsing them is how a
 // quiet screen came to be announced as a finished command: whether a wait ran
-// at all, what it saw, and whether the terminal still has a command in the
-// foreground. The last is the only one that answers "has it finished", so it
-// is stated wherever it is known and never guessed at where it is not.
+// at all, what it saw, whether the shell has started, and whether the terminal
+// still has a command in the foreground. The last two are the only ones that
+// answer "has it finished", so they are stated wherever they are known and
+// never guessed at where they are not.
 func waitNote(screen ipc.Screen) string {
 	if !screen.Session.Running {
 		// An ended session is covered by the per-tool guidance, which has the
@@ -185,6 +199,15 @@ func waitNote(screen ipc.Screen) string {
 	id := screen.Session.ID
 	busy, busyKnown := busyState(screen)
 	waitAgain := call("it_read", map[string]any{"session": id, "wait": 10})
+
+	// A shell still running its startup files has nothing in the foreground,
+	// which is the same thing an idle shell has. Every conclusion below rests
+	// on being able to tell those apart, so this is answered first: until the
+	// shell prompts, whatever was asked for has not run, and no amount of quiet
+	// says otherwise.
+	if !screen.ShellReady {
+		return startingNote(screen)
+	}
 
 	if screen.WaitedFor != "" && !screen.Matched {
 		elapsed := formatDuration(screen.WaitedMS)
@@ -235,6 +258,38 @@ func waitNote(screen ipc.Screen) string {
 	return ""
 }
 
+// startingNote covers a shell that has not reached a prompt yet.
+//
+// This is a real state, not an edge case: a bash that sources conda takes
+// eight seconds on the machine this was written on, and oh-my-zsh is no
+// quicker. Anything typed in the meantime is held by the terminal and runs when
+// the shell gets there, so nothing is lost -- but it has not happened yet, and
+// saying so is the whole point. The wording avoids "still running", which
+// belongs to a command that has started.
+func startingNote(screen ipc.Screen) string {
+	id := screen.Session.ID
+	again := call("it_read", map[string]any{"session": id, "wait": 15})
+
+	waited := ""
+	if screen.Observed && screen.WaitedMS > 0 {
+		waited = fmt.Sprintf(" after %s", formatDuration(screen.WaitedMS))
+	}
+
+	if screen.WaitedFor != "" && !screen.Matched {
+		return fmt.Sprintf(
+			"This shell has not reached a prompt yet%s, so %q could not have appeared: its startup files are "+
+				"still running and nothing typed into it has been read. What you sent is queued and will run as "+
+				"soon as the shell is ready. Wait for it with `%s`.",
+			waited, screen.WaitedFor,
+			call("it_read", map[string]any{"session": id, "wait_for": screen.WaitedFor, "wait": 30}))
+	}
+	return fmt.Sprintf(
+		"This shell has not reached a prompt yet%s: its startup files are still running, so an empty screen "+
+			"here means not started rather than nothing to show. Anything already sent is queued and runs once "+
+			"it is ready. Check again with `%s`.",
+		waited, again)
+}
+
 // exampleCommand picks a command line valid in the interpreter this session is
 // actually running. Offering `ls -la` to PowerShell teaches an agent a command
 // that fails there.
@@ -263,7 +318,15 @@ func newGuidance(screen ipc.Screen) []string {
 			"The command finished%s before this call returned. Read its output with `%s`.",
 			exitPhrase(info), call("it_tail", map[string]any{"session": info.ID}))}
 	}
+	// "Ready" is a claim, and one this reply may already have contradicted two
+	// paragraphs above. A shell still running its startup files exists and can
+	// be typed into -- the terminal buffers it -- but it is not ready, and
+	// saying both things in one message is how a caller learns to believe
+	// neither.
 	opening := fmt.Sprintf("Session %s is ready", label(info))
+	if !screen.ShellReady {
+		opening = fmt.Sprintf("Session %s is starting", label(info))
+	}
 	if info.Shell != "" {
 		// Which interpreter is running decides the syntax of every command the
 		// caller is about to write, and on Windows it is not guessable.

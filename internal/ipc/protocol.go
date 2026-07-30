@@ -129,6 +129,14 @@ type Screen struct {
 	// CommandExit is the status of the last command the shell reported
 	// finishing, which only a shell with OSC 133 integration can tell us.
 	CommandExit *int `json:"command_exit,omitempty"`
+	// ShellReady reports that the shell has reached the point where it reads a
+	// command. It is false while startup files are still running, which looks
+	// exactly like an idle shell from the outside and must never be read as
+	// one: nothing the caller asked for has run yet.
+	ShellReady bool `json:"shell_ready"`
+	// StartupMS is how long the shell took to reach its first prompt. Only
+	// session creation sets it, being the only call that waited for it.
+	StartupMS int64 `json:"startup_ms,omitempty"`
 }
 
 // NewArgs creates a session.
