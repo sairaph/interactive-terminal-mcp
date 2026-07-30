@@ -179,3 +179,92 @@ func ShellIDs() []string {
 	sort.Strings(ids)
 	return ids
 }
+
+// CommandLineFor renders an argv array as a command line this shell will parse
+// back into exactly those arguments.
+//
+// It exists because a session is always a shell now: a command runs inside one
+// the way a person would run it, so that the shell is still there when the
+// command finishes. An argv array is offered precisely so a caller never has to
+// think about quoting, so the quoting has to happen here and has to be right.
+func (s Shell) CommandLineFor(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	switch s.ID {
+	case "cmd":
+		parts := make([]string, 0, len(argv))
+		for _, argument := range argv {
+			parts = append(parts, quoteForCmd(argument))
+		}
+		return strings.Join(parts, " ")
+	case "powershell", "pwsh":
+		parts := make([]string, 0, len(argv))
+		for _, argument := range argv {
+			parts = append(parts, quoteForPowerShell(argument))
+		}
+		// The call operator is required: a quoted first word is otherwise a
+		// string expression, which PowerShell would print rather than run.
+		return "& " + strings.Join(parts, " ")
+	default:
+		parts := make([]string, 0, len(argv))
+		for _, argument := range argv {
+			parts = append(parts, quoteForPOSIX(argument))
+		}
+		return strings.Join(parts, " ")
+	}
+}
+
+// quoteForPOSIX wraps an argument in single quotes, which suppress every form
+// of expansion. An embedded quote has to leave and re-enter them.
+func quoteForPOSIX(argument string) string {
+	if argument == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(argument, "'", `'\''`) + "'"
+}
+
+// quoteForPowerShell uses single quotes, where the only escape is doubling the
+// quote itself. Everything else, including $, is literal.
+func quoteForPowerShell(argument string) string {
+	if argument == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(argument, "'", "''") + "'"
+}
+
+// quoteForCmd quotes only when it must, because cmd.exe has no general escape.
+//
+// Double quotes protect spaces and the redirection characters. A literal double
+// quote is passed as \" which is what the C runtime argument parser expects on
+// the other side, and a run of backslashes before it has to be doubled or the
+// backslashes would escape each other instead.
+func quoteForCmd(argument string) string {
+	if argument == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(argument, " \t\n\v\"&|<>^()") {
+		return argument
+	}
+	var out strings.Builder
+	out.WriteByte('"')
+	backslashes := 0
+	for index := 0; index < len(argument); index++ {
+		switch argument[index] {
+		case '\\':
+			backslashes++
+		case '"':
+			out.WriteString(strings.Repeat(`\`, backslashes*2+1))
+			backslashes = 0
+			out.WriteByte('"')
+		default:
+			out.WriteString(strings.Repeat(`\`, backslashes))
+			backslashes = 0
+			out.WriteByte(argument[index])
+		}
+	}
+	// Trailing backslashes would escape the closing quote.
+	out.WriteString(strings.Repeat(`\`, backslashes*2))
+	out.WriteByte('"')
+	return out.String()
+}

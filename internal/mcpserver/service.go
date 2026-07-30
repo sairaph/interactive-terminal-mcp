@@ -128,8 +128,11 @@ func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name: "it_new",
 		Description: "Create a terminal session and return its first screen, along with the id every other tool needs. " +
-			"With no command it starts " + defaultShellPhrase() + ", and you then run commands with it_send. " +
-			"Pass command to run one program instead. The session keeps running after this call returns, so long builds and servers are fine.",
+			"The session is " + defaultShellPhrase() + " and stays open until you end it, whatever you run in it. " +
+			"Pass command to have it typed in and run straight away, the way you would type it yourself; when it " +
+			"finishes the shell is still there, so you can answer a prompt, run something else, or read the output. " +
+			"The call returns without waiting for it, so long builds and servers are fine too. " +
+			"Type into it later with it_send, and read it with it_read.",
 		InputSchema: newSchema(s.settings),
 	}, s.new)
 
@@ -285,10 +288,11 @@ func newSchema(settings config.Config) map[string]any {
 				map[string]any{"type": "string"},
 				map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
 			},
-			"description": "What to run. A string is interpreted by " + defaultShellPhrase() +
-				" unless shell says otherwise, so pipes, redirects, and && work. " +
-				"An array is run directly with no shell, so no quoting is needed and the program name is exact. " +
-				"Omit to start an interactive shell, which is usually the right choice.",
+			"description": "A command to run as soon as the session opens, typed into it as you would type it. " +
+				"A string goes in as written, so pipes, redirects, and && work. " +
+				"An array is quoted for you, so an argument containing spaces needs nothing added and the program " +
+				"name is taken exactly. Either way the session stays open when it finishes. " +
+				"Omit it to get a bare prompt.",
 		},
 		"cwd": stringProperty("Directory to start in. Defaults to the directory the server was started from."),
 		"env": map[string]any{

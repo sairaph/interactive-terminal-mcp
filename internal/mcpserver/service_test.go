@@ -229,7 +229,7 @@ func TestKeysDriveAFullScreenProgram(t *testing.T) {
 
 	body, isError := callTool(t, session, "it_new", map[string]any{
 		"name": "pager", "command": []any{"less", "-X", target},
-		"cols": 40, "rows": 12, "wait": 4,
+		"cols": 40, "rows": 12, "wait": 20, "wait_for": "line-1",
 	})
 	if isError {
 		t.Fatalf("starting the pager failed:\n%s", body)
@@ -337,8 +337,9 @@ func TestTailReturnsLogAndScreen(t *testing.T) {
 	session := newLiveService(t)
 	callTool(t, session, "it_new", map[string]any{
 		"name": "noisy", "rows": 10, "cols": 60,
-		"command": "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 30",
-		"wait":    8,
+		"command":  "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 30",
+		"wait":     20,
+		"wait_for": "line-300",
 	})
 
 	body, isError := callTool(t, session, "it_tail", map[string]any{"session": "noisy", "lines": 5})
@@ -352,9 +353,9 @@ func TestTailReturnsLogAndScreen(t *testing.T) {
 		t.Errorf("tail should report the log size:\n%s", body)
 	}
 
-	body, _ = callTool(t, session, "it_head", map[string]any{"session": "noisy", "lines": 3})
+	body, _ = callTool(t, session, "it_head", map[string]any{"session": "noisy", "lines": 6})
 	if !strings.Contains(body, "line-1") {
-		t.Errorf("head should start at the oldest output:\n%s", body)
+		t.Errorf("head should reach the oldest output:\n%s", body)
 	}
 	if strings.Contains(body, "Live screen:") {
 		t.Errorf("head should not append the screen:\n%s", body)

@@ -94,7 +94,16 @@ type Session struct {
 	pumpDone chan struct{}
 	done     chan struct{}
 	closeOne sync.Once
+
+	// entry is the command line to type once the shell has drawn a prompt. The
+	// caller runs it rather than the constructor so the typing and the wait that
+	// follows it are one operation.
+	entry string
 }
+
+// Entry is the command line this session was asked to run, to be typed into the
+// shell once it is ready. It is empty for a session that is only a shell.
+func (s *Session) Entry() string { return s.entry }
 
 // New starts a session. The returned session is running unless an error is
 // reported; the caller owns calling Close.
@@ -106,11 +115,11 @@ func New(options Options) (*Session, error) {
 		options.Rows = 30
 	}
 
-	argv, shell, usedShell, err := resolveCommand(options)
+	startup, entry, display, shell, err := resolveCommand(options)
 	if err != nil {
 		return nil, err
 	}
-	argv = applyIntegration(argv, shell, usedShell, options)
+	startup = applyIntegration(startup, shell, options)
 	cwd := options.Cwd
 	if cwd == "" {
 		cwd, _ = os.Getwd()
@@ -135,14 +144,14 @@ func New(options Options) (*Session, error) {
 		return nil, fmt.Errorf("size pty: %w", err)
 	}
 
-	command := terminal.Command(argv[0], argv[1:]...)
+	command := terminal.Command(startup[0], startup[1:]...)
 	command.Dir = cwd
 	command.Env = buildEnv(options.Env, options.Cols, options.Rows)
 
 	if err := command.Start(); err != nil {
 		terminal.Close()
 		logs.close()
-		return nil, fmt.Errorf("start %s: %w", argv[0], err)
+		return nil, fmt.Errorf("start %s: %w", startup[0], err)
 	}
 
 	now := time.Now().UTC()
@@ -162,18 +171,78 @@ func New(options Options) (*Session, error) {
 		lastActivity: now,
 	}
 	session.metadata = Metadata{
-		ID: options.ID, Name: options.Name, Command: argv,
-		CommandLine: options.CommandLine, Shell: usedShell,
+		ID: options.ID, Name: options.Name, Command: display,
+		CommandLine: options.CommandLine, Shell: true,
 		ShellID: shell.ID, ShellPath: shell.Path, ShellName: shell.Display,
 		Cwd: cwd, Env: options.Env, Cols: options.Cols, Rows: options.Rows,
 		PID: commandPID(command), CreatedAt: now, LastActivityAt: now,
 	}
 	_ = logs.writeMetadata(session.metadata)
 
+	session.entry = entry
+
 	go session.pump()
 	go session.answerQueries()
 	go session.reap()
+
+	// The command is typed in here rather than by the caller so that every way
+	// of making a session behaves the same, and so that a session is never
+	// handed back with a command pending that nobody entered.
+	if entry != "" {
+		session.enterCommand(entry)
+	}
 	return session, nil
+}
+
+// promptGrace bounds the wait for a shell to draw something before a command is
+// typed into it.
+//
+// It is short on purpose. The terminal's input buffer holds anything written
+// before the shell reads it, so typing early costs nothing but the echo landing
+// above the prompt rather than after it -- the same thing that happens when a
+// person pastes into a slow terminal. Waiting long enough to be certain is the
+// worse trade: a shell whose startup files read from stdin prints nothing at
+// all until something is typed, so any wait for a prompt on such a machine
+// burns its whole budget and then types anyway.
+const promptGrace = 750 * time.Millisecond
+
+// enterCommand gives the shell a moment to draw, then types the command.
+//
+// What it waits for is the first byte, not quiet. A prompt is the first thing a
+// shell prints, so that is the cheapest signal that it is up and the echo will
+// land in a sensible place; waiting for quiet on top of it would add the settle
+// interval to the creation of every session that runs something.
+func (s *Session) enterCommand(commandLine string) {
+	deadline := time.After(promptGrace)
+	for s.OutputBytes() == 0 {
+		activity := s.activityChannel()
+		select {
+		case <-activity:
+		case <-deadline:
+			// Nothing drawn. The shell may simply be slow, or its startup files
+			// may be waiting on stdin themselves, in which case what is typed
+			// next is what unblocks it.
+		case <-s.processDone:
+		}
+		break
+	}
+	// A failure here leaves a usable shell with nothing typed into it, which is
+	// better than refusing to hand back a terminal that works.
+	_ = s.TypeCommand(commandLine)
+}
+
+// TypeCommand types a command line and submits it, exactly as a person would.
+//
+// Multi-line input goes through bracketed paste when the program has enabled
+// it, so an editor receives one paste rather than a sequence of commands.
+func (s *Session) TypeCommand(text string) error {
+	if strings.ContainsAny(text, "\n\r") {
+		if err := s.WritePaste(strings.TrimRight(text, "\r\n")); err != nil {
+			return err
+		}
+		return s.Write([]byte{'\r'})
+	}
+	return s.Write([]byte(text + "\r"))
 }
 
 // answerQueries forwards the emulator's replies back to the program.
@@ -220,39 +289,50 @@ func (s *Session) answerQueries() {
 	}
 }
 
-// resolveCommand decides what to execute.
+// resolveCommand decides what to execute and what to report.
 //
-// A string command line goes through a shell so shell syntax works; an argv
-// array is executed directly so no quoting is needed. The chosen shell is
-// returned so the caller can report what actually started, which matters most
-// on Windows where the answer is not obvious.
-func resolveCommand(options Options) (argv []string, shell Shell, usedShell bool, err error) {
-	if len(options.Argv) > 0 {
-		if strings.TrimSpace(options.Argv[0]) == "" {
-			return nil, Shell{}, false, errors.New("command array's first element must be a program name")
-		}
-		resolved, lookErr := exec.LookPath(options.Argv[0])
-		if lookErr != nil {
-			return nil, Shell{}, false, fmt.Errorf("command %q was not found on PATH", options.Argv[0])
-		}
-		argv := append([]string{resolved}, options.Argv[1:]...)
-		// Running a shell by name is still running a shell. Saying so is what
-		// lets a caller know which syntax the session takes, and lets the
-		// foreground check treat it as a shell rather than as one long command.
-		if shell, ok := shellForProgram(argv); ok {
-			return argv, shell, true, nil
-		}
-		return argv, Shell{}, false, nil
-	}
-
+// A session is always an interactive shell. A command is not executed *as* the
+// session; it is typed into it, the way a person opens a terminal and runs
+// something. That is the difference between a terminal and a subprocess: when
+// the command finishes there is still a shell there, still holding the working
+// directory and the scrollback, ready for the next thing. Running the command
+// as the session process instead made every session die the moment its command
+// did, which made an installer that asks a question impossible to answer.
+//
+// startup is what gets executed. entry is the command line to type once the
+// shell is ready, empty for a bare shell. display is what the session reports
+// running, which is what the caller asked for rather than the shell wrapping it.
+func resolveCommand(options Options) (startup []string, entry string, display []string, shell Shell, err error) {
 	chosen, err := ResolveShell(options.Shell)
 	if err != nil {
-		return nil, Shell{}, false, err
+		return nil, "", nil, Shell{}, err
 	}
-	if strings.TrimSpace(options.CommandLine) == "" {
-		return []string{chosen.Path}, chosen, true, nil
+
+	if len(options.Argv) > 0 {
+		if strings.TrimSpace(options.Argv[0]) == "" {
+			return nil, "", nil, Shell{}, errors.New("command array's first element must be a program name")
+		}
+		// The program is resolved here rather than left to the shell so that a
+		// name that does not exist is an error on creation, with the name in it,
+		// instead of a "command not found" the caller has to go and read.
+		resolved, lookErr := exec.LookPath(options.Argv[0])
+		if lookErr != nil {
+			return nil, "", nil, Shell{}, fmt.Errorf("command %q was not found on PATH", options.Argv[0])
+		}
+		wanted := append([]string{resolved}, options.Argv[1:]...)
+		// A shell named on its own is the session's shell, not something typed
+		// into another one. ["bash"] should be a bash session, the same as
+		// shell: "bash", rather than a bash running inside the default shell.
+		if named, ok := shellForProgram(wanted); ok {
+			return wanted, "", wanted, named, nil
+		}
+		return []string{chosen.Path}, chosen.CommandLineFor(wanted), wanted, chosen, nil
 	}
-	return chosen.Argv(options.CommandLine), chosen, true, nil
+
+	if line := strings.TrimSpace(options.CommandLine); line != "" {
+		return []string{chosen.Path}, options.CommandLine, []string{chosen.Path}, chosen, nil
+	}
+	return []string{chosen.Path}, "", []string{chosen.Path}, chosen, nil
 }
 
 // buildEnv merges the caller's variables over the inherited environment and

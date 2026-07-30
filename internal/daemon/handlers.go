@@ -95,9 +95,12 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 	d.registry.add(live, directory)
 	d.touch()
 
-	// A new session starts with an empty screen and nothing is typed into it,
-	// so there is neither a baseline nor an echo to discount.
-	settled := d.wait(ctx, live, args.WaitMS, session.WaitTarget{Text: args.WaitFor}, settings)
+	// session.New has already typed any command in. Naming it as the echo keeps
+	// wait_for exact: a marker the command line itself contains must not match
+	// the terminal repeating it back.
+	target := session.WaitTarget{Text: args.WaitFor, Echo: live.Entry()}
+
+	settled := d.wait(ctx, live, args.WaitMS, target, settings)
 	screen := d.screen(live, settled)
 	screen.WaitedFor = args.WaitFor
 	return screen, nil

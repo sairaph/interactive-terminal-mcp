@@ -9,9 +9,9 @@
 # startup files. The user's must therefore be sourced here, or their shell
 # would arrive with none of their configuration.
 
-if [ -r /etc/bash.bashrc ]; then
-	. /etc/bash.bashrc
-fi
+# Only the user's file. --init-file replaces ~/.bashrc, but bash still sources
+# the system rc itself, so sourcing that here would run it twice -- which on
+# Debian and Ubuntu means the shell greets you twice.
 if [ -r "$HOME/.bashrc" ]; then
 	. "$HOME/.bashrc"
 fi

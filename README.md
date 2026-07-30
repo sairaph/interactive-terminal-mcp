@@ -178,7 +178,7 @@ current session would let one agent's command land in another's terminal.
 | Tool | Description |
 | --- | --- |
 | `it_list` | List all sessions, running and recently ended, newest activity first |
-| `it_new` | Create a session and return its first screen, with the id every other tool needs |
+| `it_new` | Create a session and return its first screen, with the id every other tool needs. `command` is typed into it and the session stays open afterwards |
 | `it_kill` | End a session (**requires** an explicit session; never inferred) |
 
 ### Using a session

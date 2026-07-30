@@ -67,13 +67,8 @@ func integrationFor(shell Shell) (integrationSetup, bool) {
 // Every failure here is silent and harmless: the shell starts exactly as it
 // would have, and the tools fall back to watching output and the process
 // table. Nothing about a session depends on this succeeding.
-func applyIntegration(argv []string, shell Shell, usedShell bool, options Options) []string {
-	if !options.Integrate || !usedShell {
-		return argv
-	}
-	// Only an interactive shell has prompts to mark. A shell running one
-	// command exits when it finishes, and its exit code is already reported.
-	if options.CommandLine != "" || len(options.Argv) > 0 {
+func applyIntegration(argv []string, shell Shell, options Options) []string {
+	if !options.Integrate {
 		return argv
 	}
 	setup, ok := integrationFor(shell)

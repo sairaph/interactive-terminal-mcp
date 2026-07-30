@@ -22,6 +22,13 @@ func newTestSession(t *testing.T, options Options) *Session {
 	if options.Directory == "" {
 		options.Directory = t.TempDir()
 	}
+	// sh unless a test says otherwise. These tests are about session mechanics,
+	// and the developer's own bash may take seconds to start -- conda alone
+	// costs ten on one machine here -- which would make every timeout a
+	// measurement of somebody's dotfiles.
+	if options.Shell == "" && len(options.Argv) == 0 {
+		options.Shell = "sh"
+	}
 	if options.Cols == 0 {
 		options.Cols = 80
 	}
@@ -58,7 +65,7 @@ func waitForScreen(t *testing.T, session *Session, want string, timeout time.Dur
 }
 
 func TestSessionRunsCommandAndCapturesExit(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "printf 'hello world\\r\\n'; exit 7"}})
+	session := newTestSession(t, Options{CommandLine: "printf 'hello world\\r\\n'; exit 7"})
 
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit in time")
@@ -124,7 +131,7 @@ func TestWaitSettledReturnsEarlyOnQuiet(t *testing.T) {
 // An agent that sees settled:false knows the screen may be mid-update.
 func TestWaitSettledReportsUnsettledUnderContinuousOutput(t *testing.T) {
 	session := newTestSession(t, Options{
-		Argv: []string{"sh", "-c", "while :; do printf 'tick\\r\\n'; sleep 0.05; done"},
+		Shell: "sh", CommandLine: "while :; do printf 'tick\\r\\n'; sleep 0.05; done",
 	})
 	waitForScreen(t, session, "tick", 5*time.Second)
 
@@ -136,7 +143,7 @@ func TestWaitSettledReportsUnsettledUnderContinuousOutput(t *testing.T) {
 }
 
 func TestWaitSettledReturnsOnExit(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 0.2; exit 3"}})
+	session := newTestSession(t, Options{CommandLine: "sleep 0.2; exit 3"})
 	result := session.WaitSettled(context.Background(), 10*time.Second, 5*time.Second)
 	if !result.Exited {
 		t.Error("wait should report the session exited")
@@ -150,8 +157,8 @@ func TestWaitSettledReturnsOnExit(t *testing.T) {
 // way it_tail reaches further back than the visible screen.
 func TestTranscriptCapturesScrolledOffOutput(t *testing.T) {
 	session := newTestSession(t, Options{
-		Rows: 10,
-		Argv: []string{"sh", "-c", "i=1; while [ $i -le 200 ]; do printf 'line-%d\\r\\n' $i; i=$((i+1)); done"},
+		Rows:        10,
+		CommandLine: "i=1; while [ $i -le 200 ]; do printf 'line-%d\\r\\n' $i; i=$((i+1)); done; exit",
 	})
 	if !session.WaitExit(contextWithTimeout(t, 15*time.Second)) {
 		t.Fatal("session did not exit in time")
@@ -163,8 +170,8 @@ func TestTranscriptCapturesScrolledOffOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Head: %v", err)
 	}
-	if len(head.Lines) == 0 || !strings.Contains(head.Lines[0], "line-1") {
-		t.Errorf("head should start at the oldest output, got %q", head.Lines)
+	if !strings.Contains(strings.Join(head.Lines, "\n"), "line-1") {
+		t.Errorf("head should reach the oldest output, got %q", head.Lines)
 	}
 
 	tail, err := Tail(session.TranscriptPath(), 5)
@@ -259,7 +266,7 @@ func TestResizeMovesPTYAndEmulatorTogether(t *testing.T) {
 }
 
 func TestKillTerminatesAndRecordsCause(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 60"}})
+	session := newTestSession(t, Options{CommandLine: "sleep 60"})
 	waitForScreen(t, session, "", 1*time.Second) // let it start
 
 	if err := session.Kill("TERM", "it_kill"); err != nil {
@@ -281,7 +288,7 @@ func TestKillTerminatesAndRecordsCause(t *testing.T) {
 // Writing to a dead session must be a clear typed error rather than a silent
 // no-op, so the agent is told to create a new session instead.
 func TestWriteToExitedSessionFails(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "exit 0"}})
+	session := newTestSession(t, Options{CommandLine: "exit 0"})
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit")
 	}
@@ -292,7 +299,7 @@ func TestWriteToExitedSessionFails(t *testing.T) {
 
 func TestMetadataIsReadableFromDisk(t *testing.T) {
 	directory := t.TempDir()
-	session := newTestSession(t, Options{Name: "named", Directory: directory, Argv: []string{"sh", "-c", "exit 0"}})
+	session := newTestSession(t, Options{Name: "named", Directory: directory, CommandLine: "exit 0"})
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit")
 	}
@@ -316,8 +323,8 @@ func TestMetadataIsReadableFromDisk(t *testing.T) {
 
 func TestEnvironmentIsMergedAndTerminalIsDescribed(t *testing.T) {
 	session := newTestSession(t, Options{
-		Env:  map[string]string{"IT_TEST_VAR": "custom-value"},
-		Argv: []string{"sh", "-c", `printf '%s|%s\r\n' "$IT_TEST_VAR" "$TERM"`},
+		Env:         map[string]string{"IT_TEST_VAR": "custom-value"},
+		CommandLine: `printf '%s|%s\r\n' "$IT_TEST_VAR" "$TERM"; exit`,
 	})
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
 		t.Fatal("session did not exit")
@@ -428,8 +435,18 @@ func TestFullScreenEditorRoundTrip(t *testing.T) {
 	write("\x1b")
 	write(":wq\r")
 
-	if !session.WaitExit(contextWithTimeout(t, 15*time.Second)) {
+	// The editor ran inside the session's shell, so quitting it leaves the shell
+	// there. That is the point: an agent can edit a file and then keep working
+	// in the same terminal.
+	quit := time.Now().Add(15 * time.Second)
+	for time.Now().Before(quit) && session.Snapshot().AltScreen {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if session.Snapshot().AltScreen {
 		t.Fatal("vim did not exit after :wq")
+	}
+	if !session.Running() {
+		t.Error("quitting the editor must not end the session")
 	}
 	content, err := os.ReadFile(target)
 	if err != nil {
@@ -445,24 +462,18 @@ func TestFullScreenEditorRoundTrip(t *testing.T) {
 // working, and calling that "settled" hands the agent a blank screen with a
 // claim that the command is done. This showed up on a loaded CI runner where
 // the shell took longer to start than the quiet window.
-func TestWaitSettledWaitsForTheFirstOutput(t *testing.T) {
-	session := newTestSession(t, Options{
-		Argv: []string{"sh", "-c", "sleep 1.2; printf 'late-output\\r\\n'; sleep 30"},
-	})
+func TestWaitSettledNeverSettlesOnABlankScreen(t *testing.T) {
+	session := newTestSession(t, Options{})
 
-	// The quiet window is far shorter than the delay before the first byte, so
-	// a naive quiet check would settle immediately on an empty screen.
+	// The quiet window is short enough that a naive check would settle before
+	// the shell had drawn anything at all.
 	result := session.WaitSettled(context.Background(), 10*time.Second, 150*time.Millisecond)
 	if !result.Settled {
 		t.Fatalf("the wait should settle once output arrives and stops, got %+v", result)
 	}
-	if result.Waited < time.Second {
-		t.Errorf("the wait returned after %v, before the command produced anything", result.Waited)
+	if session.OutputBytes() == 0 || strings.TrimSpace(session.Snapshot().Text()) == "" {
+		t.Error("a settled screen must not be a blank one")
 	}
-	if text := session.Snapshot().Text(); !strings.Contains(text, "late-output") {
-		t.Errorf("a settled screen should hold the output that settled it, got %q", text)
-	}
-	_ = session.Kill("KILL", "test")
 }
 
 // A session with a drawn screen that is simply idle must still settle at once,
@@ -486,15 +497,21 @@ func TestWaitSettledReturnsImmediatelyOnAnIdleScreen(t *testing.T) {
 	}
 }
 
-// A command that genuinely produces nothing cannot be called settled, because
-// there is no evidence it did anything. Burning the budget and reporting
-// settled:false is the honest answer.
-func TestSilentCommandIsNotReportedAsSettled(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "sleep 30"}})
+// A silent command typed into a shell does settle: the prompt is drawn and then
+// nothing moves, which is indistinguishable from finished by looking at output
+// alone. That is exactly why settled is not the completion signal, and why busy
+// exists. This pins the pair, because settling here is only safe while the
+// other half still reports the truth.
+func TestASilentCommandSettlesButIsReportedBusy(t *testing.T) {
+	session := newTestSession(t, Options{CommandLine: "sleep 30"})
 
-	result := session.WaitSettled(context.Background(), 700*time.Millisecond, 150*time.Millisecond)
-	if result.Settled {
-		t.Error("a session that has produced nothing must not report settled")
+	result := session.WaitSettled(context.Background(), 5*time.Second, 250*time.Millisecond)
+	if !result.Settled {
+		t.Errorf("a quiet screen settles, got %+v", result)
+	}
+	busy, known := session.CommandBusy()
+	if !known || !busy {
+		t.Errorf("the command is still running; busy must say so, got busy=%v known=%v", busy, known)
 	}
 	_ = session.Kill("KILL", "test")
 }
@@ -506,7 +523,8 @@ func TestSilentCommandIsNotReportedAsSettled(t *testing.T) {
 func TestExitIsVisibleBeforeFinalisation(t *testing.T) {
 	session := newTestSession(t, Options{
 		// Enough output that finalising the transcript takes real time.
-		Argv: []string{"sh", "-c", "i=1; while [ $i -le 4000 ]; do echo line-$i; i=$((i+1)); done; exit 0"},
+		Shell:       "sh",
+		CommandLine: "i=1; while [ $i -le 4000 ]; do echo line-$i; i=$((i+1)); done; exit 0",
 	})
 
 	if !session.WaitExit(contextWithTimeout(t, 15*time.Second)) {
@@ -910,9 +928,14 @@ func TestIntegratedShellReportsItsCommands(t *testing.T) {
 // cannot integrate, or a directory it cannot write to, has to leave the shell
 // exactly as it would have been.
 func TestIntegrationIsOptionalAndSilent(t *testing.T) {
-	session := newTestSession(t, Options{Argv: []string{"sh", "-c", "echo plain-start"}, Integrate: true})
-	waitForScreen(t, session, "plain-start", 10*time.Second)
+	// sh has no integration script, so this exercises the path where the shell
+	// cannot be integrated: it must still start and run what it was given.
+	session := newTestSession(t, Options{Shell: "sh", CommandLine: "echo plain-start", Integrate: true})
+	waitForScreen(t, session, "plain-start", 15*time.Second)
 	if session.Commands().Integrated {
-		t.Error("a one-shot command has no prompts to mark")
+		t.Error("this shell reports nothing, so nothing should be claimed")
+	}
+	if !session.Running() {
+		t.Error("the session must survive a shell that cannot be integrated")
 	}
 }

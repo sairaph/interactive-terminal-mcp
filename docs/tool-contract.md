@@ -322,7 +322,7 @@ No terminal sessions exist. Create one with `it_new({})`.
 | Argument | Required | Meaning |
 |---|---:|---|
 | `name` | no | Stable name for the session. Generated id is used when omitted. |
-| `command` | no | String run through the login shell, or an argv array executed directly. Defaults to the user's shell. |
+| `command` | no | A command typed into the session as soon as it opens. A string as written, or an argv array quoted for you. |
 
 ### Names identify one session
 
@@ -348,15 +348,32 @@ whatever it restores from disk.
 | `rows` | no | Terminal height; defaults to the configured `30`. |
 | `wait` | no | Seconds to wait for the first output to settle; defaults to `2`. |
 
+### A session is a shell, whatever runs in it
+
+A session is always an interactive shell, and it stays open until that shell
+exits or is killed. `command` does not replace it: the session waits for its
+first prompt and then the command is typed in, exactly as a person opening a
+terminal would type it.
+
+That is the difference between a terminal and a subprocess, and it is the point
+of this tool. When the command finishes the shell is still there, holding the
+working directory and the scrollback, so you can answer a question the command
+asked, run the next thing, or read what happened. Running the command *as* the
+session made every session die the moment its command did, which made an
+installer that asks anything impossible to use.
+
 `command` overloads its type the way `apis_call` overloads `headers`:
 
-- A string is passed to the user's login shell as a single command line, so
-  `"npm run dev"` and `"cd /tmp && ls"` both work.
-- An array is executed directly with no shell, so arguments containing spaces
-  or quotes need no escaping.
+- A string is typed in as written, so `"npm run dev"` and `"cd /tmp && ls"`
+  both work, pipes and redirects included.
+- An array is quoted for the session's shell before being typed, so an argument
+  containing spaces or quotes needs no escaping and the program name is taken
+  exactly. A shell named on its own -- `["bash"]`, `["cmd.exe"]` -- becomes the
+  session's shell rather than one nested inside another.
 
-The session is created and its first screen is returned. The
-default `wait: 2` is long enough for a shell prompt to be drawn.
+The call returns without waiting for the command to finish, so a build or a
+server is fine. Its exit status is reported as `command_exit` wherever the shell
+reports its own command boundaries.
 
 Creating a session with a name that is already taken by a live session is an
 error naming the existing session; it does not silently attach or replace.

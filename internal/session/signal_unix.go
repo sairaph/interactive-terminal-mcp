@@ -19,26 +19,39 @@ func (s *Session) signal(name string) error {
 	if pid <= 0 {
 		return fmt.Errorf("session has no running process to signal")
 	}
-	var number syscall.Signal
+	var numbers []syscall.Signal
 	switch name {
 	case "TERM":
-		number = syscall.SIGTERM
+		// A session is an interactive shell, and those ignore SIGTERM by
+		// design, so TERM alone would never end one: every kill would sit out
+		// the escalation window and then report having been forced, as though
+		// something had misbehaved. SIGHUP is what closes a terminal, and a
+		// shell exits on it. Sending both is what "ask this session to end"
+		// actually means now: whatever is in there answers to one of them.
+		numbers = []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP}
 	case "HUP":
-		number = syscall.SIGHUP
+		numbers = []syscall.Signal{syscall.SIGHUP}
 	case "KILL":
-		number = syscall.SIGKILL
+		numbers = []syscall.Signal{syscall.SIGKILL}
 	default:
 		return fmt.Errorf("unsupported signal %q", name)
 	}
-	if err := syscall.Kill(-pid, number); err != nil {
-		// The group may already be gone, or the child may never have become a
-		// leader; fall back to the process itself rather than reporting a
-		// failure the caller cannot act on.
-		if err := syscall.Kill(pid, number); err != nil {
-			return fmt.Errorf("signal %s: %w", name, err)
+
+	var failure error
+	for _, number := range numbers {
+		if err := syscall.Kill(-pid, number); err != nil {
+			// The group may already be gone, or the child may never have become
+			// a leader; fall back to the process itself rather than reporting a
+			// failure the caller cannot act on.
+			if err := syscall.Kill(pid, number); err != nil {
+				failure = fmt.Errorf("signal %s: %w", name, err)
+				continue
+			}
 		}
+		// One signal getting through is enough to have asked.
+		failure = nil
 	}
-	return nil
+	return failure
 }
 
 // signalExitCode renders a signalled exit using the shell's 128+signal

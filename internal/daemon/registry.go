@@ -239,8 +239,10 @@ func exitedError(found *entry) *ipc.Error {
 	return &ipc.Error{
 		Code:    ipc.CodeSessionExited,
 		Message: message,
-		Hint:    "Its screen and logs are still readable with it_read, it_tail, and it_head. Start a new session with it_new({}) to run more commands.",
-		Fields:  fields,
+		Hint: "Its screen and logs are still readable with it_read, it_tail, and it_head. " +
+			"A session ends when its shell does, so this one was exited or killed. " +
+			"Start another with it_new({}).",
+		Fields: fields,
 	}
 }
 

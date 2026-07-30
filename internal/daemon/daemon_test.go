@@ -154,9 +154,14 @@ func TestKillEscalatesWhenTermIsIgnored(t *testing.T) {
 
 	var created ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
-		Name:   "stubborn",
-		Argv:   []string{"sh", "-c", "trap '' TERM; while :; do sleep 0.2; done"},
-		WaitMS: 1000,
+		Name: "stubborn",
+		// The session's own shell has to refuse, not a child of it. TERM is
+		// delivered with HUP now, because an interactive shell ignores TERM by
+		// design, so both have to be trapped for this to be a session that
+		// genuinely will not leave without force.
+		Shell:       "sh",
+		CommandLine: "trap '' TERM HUP; while :; do sleep 0.2; done",
+		WaitMS:      2000,
 	}, &created)
 
 	var result ipc.KillResult
@@ -203,10 +208,45 @@ func TestInterruptLeavesTheSessionUsable(t *testing.T) {
 	}
 }
 
+// endSession leaves a session ended but still listed, which is what happens
+// when a shell exits on its own. it_kill would retire the entry under the
+// default retention policy and remove it, so it cannot stand in for this.
+func endSession(t *testing.T, client *ipc.Client, reference string) {
+	t.Helper()
+	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
+		Session: reference, Text: "exit", HasText: true, Enter: true, WaitMS: 3000,
+	}, &ipc.Screen{})
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var screen ipc.Screen
+		if err := call(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: reference}, &screen); err != nil {
+			return
+		}
+		if !screen.Session.Running {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("session %q did not end", reference)
+}
+
 func TestWritingToAnEndedSessionIsTyped(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
 	var created ipc.Screen
-	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Name: "brief", Argv: []string{"sh", "-c", "exit 4"}, WaitMS: 3000}, &created)
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Name: "brief", Argv: []string{"sh"}, WaitMS: 3000}, &created)
+	// A status the shell chose, so the error has a specific code to report.
+	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
+		Session: "brief", Text: "exit 4", HasText: true, Enter: true, WaitMS: 3000,
+	}, &ipc.Screen{})
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var screen ipc.Screen
+		mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: "brief"}, &screen)
+		if !screen.Session.Running {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	err := call(t, client, ipc.OpSessionSend, ipc.SendArgs{
 		Session: "brief", Text: "echo hi", HasText: true, Enter: true,
@@ -307,8 +347,9 @@ func TestLogsReachBeyondTheScreen(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
 		Name: "noisy", Rows: 10, Cols: 60,
-		Argv:   []string{"sh", "-c", "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 30"},
-		WaitMS: 5000,
+		Argv:    []string{"sh", "-c", "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 30"},
+		WaitMS:  20000,
+		WaitFor: "line-300",
 	}, &ipc.Screen{})
 
 	var tail ipc.LogResult
@@ -321,9 +362,9 @@ func TestLogsReachBeyondTheScreen(t *testing.T) {
 	}
 
 	var head ipc.LogResult
-	mustCall(t, client, ipc.OpSessionLog, ipc.LogArgs{Session: "noisy", Lines: 3, FromEnd: false}, &head)
-	if len(head.Lines) == 0 || !strings.Contains(head.Lines[0], "line-1") {
-		t.Errorf("head should start at the oldest output, got %q", head.Lines)
+	mustCall(t, client, ipc.OpSessionLog, ipc.LogArgs{Session: "noisy", Lines: 6, FromEnd: false}, &head)
+	if !strings.Contains(strings.Join(head.Lines, "\n"), "line-1") {
+		t.Errorf("head should reach the oldest output, got %q", head.Lines)
 	}
 }
 
@@ -335,8 +376,9 @@ func TestEndedSessionsStayReadable(t *testing.T) {
 
 	var created ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
-		Name: "done", Argv: []string{"sh", "-c", "echo finished-output; exit 0"}, WaitMS: 4000,
+		Name: "done", CommandLine: "echo finished-output", WaitMS: 4000,
 	}, &created)
+	endSession(t, client, "done")
 
 	var screen ipc.Screen
 	mustCall(t, client, ipc.OpSessionRead, ipc.ReadArgs{Session: "done"}, &screen)
@@ -352,8 +394,9 @@ func TestRenameAndScrollback(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
 	var created ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
-		Rows: 8, Argv: []string{"sh", "-c", "i=1; while [ $i -le 60 ]; do echo row-$i; i=$((i+1)); done; sleep 30"},
-		WaitMS: 3000,
+		Rows: 8, CommandLine: "i=1; while [ $i -le 60 ]; do echo row-$i; i=$((i+1)); done",
+		WaitMS:  20000,
+		WaitFor: "row-60",
 	}, &created)
 
 	var info ipc.SessionInfo
@@ -395,11 +438,8 @@ func TestAReusedNameBelongsToTheLiveSession(t *testing.T) {
 
 	var dead ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew,
-		ipc.NewArgs{Name: "build", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
-	if dead.Session.Running {
-		t.Fatal("the first session was supposed to exit immediately")
-	}
-
+		ipc.NewArgs{Name: "build", Argv: []string{"sh"}, WaitMS: 2000}, &dead)
+	endSession(t, client, "build")
 	var live ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew,
 		ipc.NewArgs{Name: "build", Argv: []string{"sh"}, WaitMS: 1500}, &live)
@@ -439,7 +479,8 @@ func TestKillingByAReusedNameEndsTheLiveSession(t *testing.T) {
 
 	var dead ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew,
-		ipc.NewArgs{Name: "server", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
+		ipc.NewArgs{Name: "server", Argv: []string{"sh"}, WaitMS: 2000}, &dead)
+	endSession(t, client, "server")
 	var live ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew,
 		ipc.NewArgs{Name: "server", Argv: []string{"sh"}, WaitMS: 1500}, &live)
@@ -461,7 +502,8 @@ func TestRenamingTakesTheNameFromAnEndedSession(t *testing.T) {
 
 	var dead ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew,
-		ipc.NewArgs{Name: "api", Argv: []string{"sh", "-c", "exit 1"}, WaitMS: 2000}, &dead)
+		ipc.NewArgs{Name: "api", Argv: []string{"sh"}, WaitMS: 2000}, &dead)
+	endSession(t, client, "api")
 	var live ipc.Screen
 	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{Argv: []string{"sh"}, WaitMS: 1500}, &live)
 
@@ -509,5 +551,52 @@ func TestCreatingASessionDoesNotRedirectOtherCalls(t *testing.T) {
 	if err := call(t, client, ipc.OpSessionSend,
 		ipc.SendArgs{Text: "echo x", HasText: true, Enter: true, WaitMS: 500}, &ipc.Screen{}); err == nil {
 		t.Error("a call naming no session must fail rather than pick one")
+	}
+}
+
+// A session is a terminal, not a subprocess: running something in it must not
+// end it. This is what makes an interactive installer usable -- one that asks a
+// question needs the session to still be there to answer in, and one that
+// finishes needs the shell to still be there to read the result from.
+func TestASessionSurvivesTheCommandItWasGiven(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "installer", Shell: "sh",
+		CommandLine: "echo first-command-ran",
+		WaitMS:      15000, WaitFor: "first-command-ran",
+	}, &created)
+	if !created.Session.Running {
+		t.Fatal("the session must outlive the command it was given")
+	}
+
+	// And it still takes input, which is the whole point.
+	var after ipc.Screen
+	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
+		Session: "installer", Text: "echo second-command-ran", HasText: true, Enter: true,
+		WaitMS: 15000, WaitFor: "second-command-ran",
+	}, &after)
+	if !after.Matched {
+		t.Errorf("the session should still run commands:\n%s", strings.Join(after.Lines, "\n"))
+	}
+	if !after.Session.Running {
+		t.Error("the session should still be running")
+	}
+}
+
+// A command given as an array is quoted for the shell it is typed into, so an
+// argument containing spaces survives without the caller escaping anything.
+func TestArrayCommandsAreQuotedForTheShell(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "quoted", Shell: "sh",
+		Argv:   []string{"printf", "%s|\n", "two words"},
+		WaitMS: 15000, WaitFor: "two words|",
+	}, &created)
+	if !created.Matched {
+		t.Errorf("the argument should have arrived intact:\n%s", strings.Join(created.Lines, "\n"))
 	}
 }
