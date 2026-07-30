@@ -13,12 +13,12 @@ ARCH="$(uname -m)"
 case "$OS" in
   Linux*)  os=linux ;;
   Darwin*) os=darwin ;;
-  *) printf 'Unsupported OS: %s\n' "$OS" >&2; exit 1 ;;
+  *) printf '\n  Unsupported OS: %s\n' "$OS" >&2; exit 1 ;;
 esac
 case "$ARCH" in
   x86_64|amd64)  arch=amd64 ;;
   arm64|aarch64) arch=arm64 ;;
-  *) printf 'Unsupported architecture: %s\n' "$ARCH" >&2; exit 1 ;;
+  *) printf '\n  Unsupported architecture: %s\n' "$ARCH" >&2; exit 1 ;;
 esac
 
 ASSET="${BIN}-${os}-${arch}"
@@ -29,7 +29,7 @@ INSTALL_DIR="$HOME/.${REPO}/bin"
 TARGET="$INSTALL_DIR/$BIN"
 mkdir -p "$INSTALL_DIR"
 
-printf '\n  %s installer\n\n  Downloading...\n\n' "$BIN"
+printf '\n  %s installer\n\n  Downloading %s...\n' "$BIN" "$ASSET"
 
 # A running daemon holds the old binary open. Ask it to stop first so an
 # upgrade never races a live process.
@@ -40,7 +40,7 @@ fi
 # Download beside the target so a failure never leaves a half-written binary
 # where the shell would find it.
 TEMP="${TARGET}.new"
-trap 'rm -f "$TEMP"' EXIT HUP INT TERM
+trap 'rm -f "$TEMP" "$TEMP.err"' EXIT HUP INT TERM
 
 # The progress display is rendered here rather than left to curl, so that the
 # Linux and Windows installers show a person the same thing: a bar, a
@@ -61,6 +61,16 @@ temp_size() {
   else
     echo 0
   fi
+}
+
+download_failed() {
+  # $1 is the reason, if the tool that failed gave one.
+  printf '\n  Download failed. Please check your connection and try again.\n' >&2
+  printf '  URL: %s\n' "$URL" >&2
+  if [ -n "$1" ]; then
+    printf '  Reason: %s\n' "$1" >&2
+  fi
+  exit 1
 }
 
 render_progress() {
@@ -134,7 +144,7 @@ download_with_progress() {
     progress_step_tenths=10
   fi
 
-  curl -fsSL "$URL" -o "$TEMP" &
+  curl -fsSL "$URL" -o "$TEMP" 2>"$TEMP.err" &
   progress_pid=$!
 
   progress_elapsed=0
@@ -162,20 +172,18 @@ if command -v curl >/dev/null 2>&1; then
     # Either the size was not offered, or the download itself failed. A
     # retry with curl's own bar keeps the install working rather than
     # failing over a missing header.
-    if ! curl -fSL --progress-bar "$URL" -o "$TEMP"; then
-      printf '\n  Download failed. Please check your connection and try again.\n  URL: %s\n' "$URL" >&2
-      exit 1
+    if ! curl -fSL --progress-bar "$URL" -o "$TEMP" 2>"$TEMP.err"; then
+      download_failed "$(cat "$TEMP.err" 2>/dev/null | tr '\n' ' ')"
     fi
   fi
 elif command -v wget >/dev/null 2>&1; then
-  if ! wget -q --show-progress -O "$TEMP" "$URL"; then
-    printf '\n  Download failed. Please check your connection and try again.\n  URL: %s\n' "$URL" >&2
-    exit 1
+  if ! wget -q --show-progress -O "$TEMP" "$URL" 2>"$TEMP.err"; then
+    download_failed "$(cat "$TEMP.err" 2>/dev/null | tr '\n' ' ')"
   fi
 else
-  printf '  Neither curl nor wget is available; cannot download.\n' >&2
-  exit 1
+  download_failed "neither curl nor wget is available"
 fi
+rm -f "$TEMP.err"
 
 if [ ! -s "$TEMP" ]; then
   printf '  Download did not complete; nothing was installed.\n' >&2
@@ -242,8 +250,10 @@ fi
 # the installer with status 2 right after it had written the binary. Inside a
 # subshell the exit is contained and simply reports false.
 if ( : </dev/tty ) 2>/dev/null; then
-  "$TARGET" configure </dev/tty || \
-    printf '  (configure skipped or failed; run `%s configure` later)\n' "$BIN"
+  "$TARGET" configure </dev/tty || {
+    printf '  configure did not complete.\n'
+    printf '  Re-run `%s configure` later to finish setup.\n' "$BIN"
+  }
 else
   printf '\n  Not running on a terminal. Finish setup with:\n    %s configure\n' "$BIN"
 fi

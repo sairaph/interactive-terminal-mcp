@@ -98,8 +98,9 @@ try {
   Write-Host ""
 } catch {
   Write-Host ""
-  Write-Host "  Download failed: $_" -ForegroundColor Red
+  Write-Host "  Download failed. Please check your connection and try again." -ForegroundColor Red
   Write-Host "  URL: $Url" -ForegroundColor Red
+  Write-Host "  Reason: $_" -ForegroundColor Red
   Remove-Item $Target -ErrorAction SilentlyContinue
   Remove-Item $tempTarget -ErrorAction SilentlyContinue
   return
@@ -171,17 +172,16 @@ if ($env:PATH -notlike "*$InstallDir*") {
 }
 
 # --- launch the configurer --------------------------------------------------
-Write-Host ""
 try {
   & $Target configure
 } catch {
   Write-Host "  configure did not complete: $_" -ForegroundColor Red
-  Write-Host "  Re-run '$Binary configure' later to finish setup." -ForegroundColor Yellow
+  Write-Host "  Re-run ``$Binary configure`` later to finish setup." -ForegroundColor Yellow
 }
 
 # --- tell the user what to do next ------------------------------------------
-Write-Host ""
 if ($pathChanged) {
+  Write-Host ""
   Write-Host "  Added to your PATH: $InstallDir" -ForegroundColor Cyan
   Write-Host ""
   Write-Host "  Open a NEW PowerShell window before running $Binary." -ForegroundColor Yellow
@@ -190,6 +190,4 @@ if ($pathChanged) {
   Write-Host ""
   Write-Host "  In a new window:  $Binary"
   Write-Host "  Or right now:     & '$Target'"
-} else {
-  Write-Host "  Run '$Binary' to browse and use your sessions."
 }
