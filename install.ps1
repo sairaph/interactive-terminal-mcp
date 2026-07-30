@@ -72,11 +72,14 @@ try {
     $filled = [math]::Floor($pct / 5)
     if ($filled -gt 20) { $filled = 20 }
     $bar = ('#' * $filled).PadRight(20)
+    # One decimal always, so a whole number reads as 3.0 rather than 3 and the
+    # line does not change width as it counts up. The shell installer renders
+    # the identical line; the two should be indistinguishable.
     $dlMB = [math]::Round($dl / 1048576, 1)
     $totMB = [math]::Round($tot / 1048576, 1)
     $speed = if ($el -gt 0) { [math]::Round($dlMB / $el, 1) } else { 0 }
     $eta = if ($speed -gt 0) { [math]::Round((($totMB - $dlMB)) / $speed) } else { 0 }
-    $line = ("  [{0}] {1,3}%  {2}/{3} MB  {4} MB/s  ETA {5:00}s" -f $bar, $pct, $dlMB, $totMB, $speed, $eta)
+    $line = ("  [{0}] {1,3}%  {2:0.0}/{3:0.0} MB  {4:0.0} MB/s  ETA {5:00}s" -f $bar, $pct, $dlMB, $totMB, $speed, $eta)
     # Pad so shorter lines fully overwrite the previous render (no stale chars).
     Write-Host ("`r{0}" -f $line.PadRight(72)) -NoNewline
   }

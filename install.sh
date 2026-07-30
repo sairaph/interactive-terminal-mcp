@@ -42,12 +42,130 @@ fi
 TEMP="${TARGET}.new"
 trap 'rm -f "$TEMP"' EXIT HUP INT TERM
 
-# curl --progress-bar writes the bar to stderr so it shows under `sh` but
-# never pollutes the captured stdout of `curl | sh`.
+# The progress display is rendered here rather than left to curl, so that the
+# Linux and Windows installers show a person the same thing: a bar, a
+# percentage, how much of how large, the rate, and how long is left. curl's own
+# bar has none of that detail, and the two installers looking different is the
+# kind of thing that makes an install feel improvised.
+#
+# It is drawn on stderr so that `curl ... | sh` cannot mistake it for output.
+# temp_size reports how much has landed so far.
+#
+# The existence check is not defensive padding: curl has not created the file
+# during the first poll, and a shell reports a failed input redirection itself,
+# before any 2>/dev/null on the command can apply. Without this the download
+# printed a screen of "cannot open" between the bar's own updates.
+temp_size() {
+  if [ -f "$TEMP" ]; then
+    wc -c < "$TEMP" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+render_progress() {
+  # $1 bytes so far, $2 bytes expected, $3 tenths of a second elapsed
+  progress_have=$1
+  progress_total=$2
+  progress_tenths=$3
+
+  progress_pct=0
+  if [ "$progress_total" -gt 0 ]; then
+    progress_pct=$((progress_have * 100 / progress_total))
+  fi
+  if [ "$progress_pct" -gt 100 ]; then
+    progress_pct=100
+  fi
+
+  progress_filled=$((progress_pct / 5))
+  progress_bar=""
+  progress_i=0
+  while [ "$progress_i" -lt 20 ]; do
+    if [ "$progress_i" -lt "$progress_filled" ]; then
+      progress_bar="${progress_bar}#"
+    else
+      progress_bar="${progress_bar} "
+    fi
+    progress_i=$((progress_i + 1))
+  done
+
+  # Tenths throughout: a POSIX shell has no floating point, and one decimal
+  # is all the display shows.
+  progress_have10=$((progress_have * 10 / 1048576))
+  progress_total10=$((progress_total * 10 / 1048576))
+  progress_rate=0
+  progress_eta=0
+  if [ "$progress_tenths" -gt 0 ] && [ "$progress_have" -gt 0 ]; then
+    progress_bps=$((progress_have * 10 / progress_tenths))
+    progress_rate=$((progress_bps * 10 / 1048576))
+    if [ "$progress_bps" -gt 0 ] && [ "$progress_total" -gt "$progress_have" ]; then
+      progress_eta=$(((progress_total - progress_have) / progress_bps))
+    fi
+  fi
+
+  # Padded so a shorter line always overwrites the one before it.
+  printf '\r  [%s] %3d%%  %d.%d/%d.%d MB  %d.%d MB/s  ETA %02ds        ' \
+    "$progress_bar" "$progress_pct" \
+    $((progress_have10 / 10)) $((progress_have10 % 10)) \
+    $((progress_total10 / 10)) $((progress_total10 % 10)) \
+    $((progress_rate / 10)) $((progress_rate % 10)) \
+    "$progress_eta" >&2
+}
+
+download_with_progress() {
+  # The size has to be known before a proportion can be shown, so it is asked
+  # for separately. Redirects are followed, and the last Content-Length seen
+  # is the one that describes the file itself.
+  progress_expected=$(curl -fsSLI "$URL" 2>/dev/null \
+    | tr -d '\r' | tr '[:upper:]' '[:lower:]' \
+    | awk '/^content-length:/ { value = $2 } END { print value + 0 }')
+  [ -n "$progress_expected" ] || progress_expected=0
+  if [ "$progress_expected" -le 0 ]; then
+    return 1
+  fi
+
+  # Sub-second polling where the shell's sleep allows it. Where it does not,
+  # a one-second tick still renders a correct bar, just less smoothly.
+  if sleep 0.2 2>/dev/null; then
+    progress_step="0.2"
+    progress_step_tenths=2
+  else
+    progress_step="1"
+    progress_step_tenths=10
+  fi
+
+  curl -fsSL "$URL" -o "$TEMP" &
+  progress_pid=$!
+
+  progress_elapsed=0
+  while kill -0 "$progress_pid" 2>/dev/null; do
+    sleep "$progress_step"
+    progress_elapsed=$((progress_elapsed + progress_step_tenths))
+    progress_size=$(temp_size)
+    render_progress "$progress_size" "$progress_expected" "$progress_elapsed"
+  done
+
+  set +e
+  wait "$progress_pid"
+  progress_status=$?
+  set -e
+  [ "$progress_status" -eq 0 ] || return "$progress_status"
+
+  progress_size=$(temp_size)
+  render_progress "$progress_size" "$progress_expected" "$progress_elapsed"
+  printf '\n' >&2
+  return 0
+}
+
 if command -v curl >/dev/null 2>&1; then
-  if ! curl -fSL --progress-bar "$URL" -o "$TEMP"; then
-    printf '\n  Download failed. Please check your connection and try again.\n  URL: %s\n' "$URL" >&2
-    exit 1
+  if ! download_with_progress; then
+    # Either the size was not offered, or the download itself failed. A
+    # retry with curl's own bar keeps the install working rather than
+    # failing over a missing header.
+    if ! curl -fSL --progress-bar "$URL" -o "$TEMP"; then
+      printf '\n  Download failed. Please check your connection and try again.\n  URL: %s\n' "$URL" >&2
+      exit 1
+    fi
   fi
 elif command -v wget >/dev/null 2>&1; then
   if ! wget -q --show-progress -O "$TEMP" "$URL"; then
