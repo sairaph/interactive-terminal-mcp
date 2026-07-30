@@ -219,20 +219,18 @@ func Run(ctx context.Context, runtime *bootstrap.Runtime, command cli.Command, o
 		fmt.Fprintln(options.Stderr, "interactive-terminal-mcp:", err)
 		return 1
 	}
-	harnesses := installer.Detect(ctx)
-
 	// An explicit selection, or no terminal to ask on, means unattended mode.
 	// Piping the installer through a shell is the normal install path, so it
 	// must do something sensible rather than failing on a missing TTY.
 	unattended := len(command.Clients) > 0 || command.All || command.Yes || !interactive(options)
 
 	if command.Name == "uninstall" {
-		return runUnattended(ctx, installer, harnesses, command, options, true)
+		return runUnattended(ctx, installer, installer.Detect(ctx), command, options, true)
 	}
 	if unattended {
-		return runUnattended(ctx, installer, harnesses, command, options, false)
+		return runUnattended(ctx, installer, installer.Detect(ctx), command, options, false)
 	}
-	return runInteractive(ctx, runtime, installer, harnesses, options)
+	return runInteractive(ctx, runtime, installer, options)
 }
 
 func runUnattended(ctx context.Context, installer *Installer, harnesses []Harness, command cli.Command, options cli.Options, remove bool) int {

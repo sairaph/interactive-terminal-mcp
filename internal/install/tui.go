@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -28,7 +29,12 @@ var (
 type step int
 
 const (
-	stepHarnesses step = iota
+	// stepDetecting is first because detection walks the filesystem looking for
+	// thirteen clients, which takes a noticeable moment. It used to run before
+	// the program started, so the installer printed its progress bar and then
+	// showed nothing at all until it finished.
+	stepDetecting step = iota
+	stepHarnesses
 	stepRetention
 	stepSummary
 	stepSettings
@@ -44,6 +50,7 @@ type installModel struct {
 	installer *Installer
 
 	step      step
+	frame     int
 	harnesses []Harness
 	selected  map[detectharness.ID]bool
 	cursor    int
@@ -62,21 +69,14 @@ type installModel struct {
 	cancel  bool
 }
 
-func runInteractive(ctx context.Context, runtime *bootstrap.Runtime, installer *Installer, harnesses []Harness, options cli.Options) int {
+func runInteractive(ctx context.Context, runtime *bootstrap.Runtime, installer *Installer, options cli.Options) int {
 	state := &installModel{
 		ctx: ctx, runtime: runtime, installer: installer,
-		harnesses: harnesses,
-		selected:  map[detectharness.ID]bool{},
-		settings:  runtime.Config,
-		original:  runtime.Config,
+		step:     stepDetecting,
+		selected: map[detectharness.ID]bool{},
+		settings: runtime.Config,
+		original: runtime.Config,
 	}
-	for _, harness := range harnesses {
-		// Already-registered and detected clients start checked, so pressing
-		// enter through the flow does the expected thing.
-		state.selected[harness.ID] = harness.Configured ||
-			(harness.State == detectharness.Detected && harness.Selectable())
-	}
-	state.cursor = state.firstSelectable()
 
 	program := tea.NewProgram(state, tea.WithContext(ctx),
 		tea.WithInput(options.Stdin), tea.WithOutput(options.Stdout))
@@ -100,7 +100,42 @@ func runInteractive(ctx context.Context, runtime *bootstrap.Runtime, installer *
 	return 0
 }
 
-func (m *installModel) Init() tea.Cmd { return nil }
+func (m *installModel) Init() tea.Cmd {
+	return tea.Batch(m.detect(), spin())
+}
+
+// detect looks for AI clients off the main loop, so the first frame is on
+// screen before the search starts rather than after it finishes.
+func (m *installModel) detect() tea.Cmd {
+	return func() tea.Msg { return detectedMsg{harnesses: m.installer.Detect(m.ctx)} }
+}
+
+type detectedMsg struct{ harnesses []Harness }
+
+type spinMsg struct{}
+
+// spinFrames are deliberately plain. The installer is the first thing a person
+// sees, sometimes in a console whose default font has no box-drawing or braille
+// glyphs, and a row of replacement boxes is a worse first impression than a
+// character that is guaranteed to draw.
+var spinFrames = []string{"-", "\\", "|", "/"}
+
+func spin() tea.Cmd {
+	return tea.Tick(110*time.Millisecond, func(time.Time) tea.Msg { return spinMsg{} })
+}
+
+// adopt takes the detection result and sets up the selection it implies.
+func (m *installModel) adopt(harnesses []Harness) {
+	m.harnesses = harnesses
+	for _, harness := range harnesses {
+		// Already-registered and detected clients start checked, so pressing
+		// enter through the flow does the expected thing.
+		m.selected[harness.ID] = harness.Configured ||
+			(harness.State == detectharness.Detected && harness.Selectable())
+	}
+	m.cursor = m.firstSelectable()
+	m.step = stepHarnesses
+}
 
 type appliedMsg struct {
 	results []ApplyResult
@@ -109,6 +144,18 @@ type appliedMsg struct {
 
 func (m *installModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case detectedMsg:
+		m.adopt(message.harnesses)
+		return m, nil
+
+	case spinMsg:
+		if m.step != stepDetecting {
+			// The search is over; stop asking for frames.
+			return m, nil
+		}
+		m.frame++
+		return m, spin()
+
 	case appliedMsg:
 		if message.err != nil {
 			m.failure = message.err.Error()
@@ -118,6 +165,15 @@ func (m *installModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.step == stepDetecting {
+			// Nothing has been found yet, so there is nothing to move a cursor
+			// over or toggle. Quitting still has to work.
+			if key := message.String(); key == "q" || key == "ctrl+c" || key == "esc" {
+				m.cancel = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if message.String() == "ctrl+c" {
 			m.cancel = true
 			return m, tea.Quit
@@ -304,7 +360,16 @@ func (m *installModel) apply() tea.Cmd {
 func (m *installModel) visible() []int {
 	var indices []int
 	for index, harness := range m.harnesses {
-		if harness.State == detectharness.Detected || m.showAll || !harness.Selectable() {
+		// A client is worth a line if it is here, or if this tool is already
+		// registered with it. Everything else belongs behind `v`.
+		//
+		// Unselectable used to be enough on its own, which put clients that
+		// cannot exist on this platform at all -- Claude Desktop has no config
+		// path on Linux -- in the visible list as "not detected", directly above
+		// a line promising that the hidden ones were the ones not installed. A
+		// client that is installed but cannot be configured still shows, because
+		// it is detected and its status says why.
+		if harness.State == detectharness.Detected || harness.Configured || m.showAll {
 			indices = append(indices, index)
 		}
 	}
@@ -389,6 +454,8 @@ func retentionIndex(value string) int {
 
 func (m *installModel) View() string {
 	switch m.step {
+	case stepDetecting:
+		return m.viewDetecting()
 	case stepHarnesses:
 		return m.viewHarnesses()
 	case stepRetention:
@@ -398,20 +465,31 @@ func (m *installModel) View() string {
 	case stepSettings:
 		return m.viewSettings()
 	case stepApplying:
-		return header() + "\n\nRegistering…\n"
+		return header() + "\n\n  Registering…\n"
 	default:
 		return m.viewDone()
 	}
 }
 
 func header() string {
-	return styleTitle.Render("interactive-terminal-mcp setup")
+	// The leading blank line and the two-space indent match the installer
+	// script's own output, so the download and the setup read as one thing
+	// rather than two programs taking turns.
+	return "\n" + styleTitle.Render("  interactive-terminal-mcp setup")
+}
+
+// viewDetecting is what replaces the download's progress bar, so it opens with
+// the same blank line and indentation the installer script uses. The two are
+// separate programs and should not look it.
+func (m *installModel) viewDetecting() string {
+	frame := spinFrames[m.frame%len(spinFrames)]
+	return header() + "\n\n  " + frame + " Initialising, looking for AI clients...\n"
 }
 
 func (m *installModel) viewHarnesses() string {
 	var out strings.Builder
 	out.WriteString(header())
-	out.WriteString("\nAI clients — which should be able to use terminal sessions?\n\n")
+	out.WriteString("\n\n  AI clients — which should be able to use terminal sessions?\n\n")
 
 	indices := m.visible()
 	if len(indices) == 0 {
@@ -452,7 +530,7 @@ func (m *installModel) viewHarnesses() string {
 func (m *installModel) viewRetention() string {
 	var out strings.Builder
 	out.WriteString(header())
-	out.WriteString("\nSession logs — when should logs from closed sessions be deleted?\n\n")
+	out.WriteString("\n\n  Session logs — when should logs from closed sessions be deleted?\n\n")
 
 	for index, option := range config.RetentionOptions {
 		cursor, dot := " ", " "
@@ -477,9 +555,9 @@ func (m *installModel) viewRetention() string {
 func (m *installModel) viewSummary() string {
 	var out strings.Builder
 	out.WriteString(header())
-	out.WriteString("\nMCP tool configuration\n")
+	out.WriteString("\n\n  MCP tool configuration\n")
 	if len(m.settings.DiffFromDefaults()) == 0 {
-		out.WriteString(styleDim.Render("Recommended defaults") + "\n")
+		out.WriteString(styleDim.Render("  Recommended defaults") + "\n")
 	}
 	out.WriteByte('\n')
 
@@ -509,7 +587,7 @@ func (m *installModel) viewSummary() string {
 func (m *installModel) viewSettings() string {
 	var out strings.Builder
 	out.WriteString(header())
-	out.WriteString("\nSettings\n\n")
+	out.WriteString("\n\n  Settings\n\n")
 
 	for index, row := range SettingsRows {
 		cursor := " "
