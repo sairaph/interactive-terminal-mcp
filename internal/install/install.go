@@ -271,11 +271,14 @@ func runUnattended(ctx context.Context, installer *Installer, harnesses []Harnes
 	}
 
 	results := installer.Apply(ctx, harnesses, selected)
+	// A blank line first: this output follows the install script's progress
+	// bar, and the two should not run together.
+	fmt.Fprintln(options.Stdout)
 	if len(results) == 0 {
 		if remove {
-			fmt.Fprintln(options.Stdout, "interactive-terminal-mcp was not registered with any client.")
+			fmt.Fprintln(options.Stdout, "  interactive-terminal-mcp was not registered with any client.")
 		} else {
-			fmt.Fprintln(options.Stdout, "No AI clients were detected. Install one, then run `interactive-terminal-mcp configure`.")
+			fmt.Fprintln(options.Stdout, "  No AI clients were detected. Install one, then run `interactive-terminal-mcp configure`.")
 		}
 		return 0
 	}
@@ -295,7 +298,7 @@ func report(results []ApplyResult, options cli.Options) int {
 		}
 	}
 	if changed {
-		fmt.Fprintln(options.Stdout, "\nRestart the affected clients so they pick up the change:")
+		fmt.Fprintln(options.Stdout, "\n  Restart the affected clients so they pick up the change:")
 		for _, result := range results {
 			if result.Changed() && result.ReloadHint != "" {
 				fmt.Fprintf(options.Stdout, "  %-24s %s\n", result.Harness.Name, result.ReloadHint)

@@ -85,7 +85,9 @@ func runInteractive(ctx context.Context, runtime *bootstrap.Runtime, installer *
 		return 1
 	}
 	if state.cancel {
-		fmt.Fprintln(options.Stdout, "Setup cancelled. Run `interactive-terminal-mcp configure` when you are ready.")
+		// Indented like every other line the installer prints, including the
+		// ones the shell script writes around it.
+		fmt.Fprintln(options.Stdout, "  Setup cancelled. Run `interactive-terminal-mcp configure` when you are ready.")
 		return 0
 	}
 	if state.failure != "" {
