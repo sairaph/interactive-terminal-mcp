@@ -18,6 +18,9 @@ import (
 //go:embed integration/bash.sh
 var bashIntegration string
 
+//go:embed integration/powershell.ps1
+var powershellIntegration string
+
 // integrationSetup describes how to start one shell with integration.
 type integrationSetup struct {
 	// script is written into the session directory and referenced by args.
@@ -55,6 +58,18 @@ func integrationFor(shell Shell) (integrationSetup, bool) {
 				// --init-file replaces bash's startup files, which is why the
 				// script sources the user's own before doing anything else.
 				return []string{"--init-file", path}
+			},
+		}, true
+	case "powershell", "pwsh":
+		return integrationSetup{
+			filename: "shell-integration.ps1",
+			contents: powershellIntegration,
+			args: func(path string) []string {
+				// -NoExit keeps the session interactive after the script runs.
+				// The failure is swallowed on purpose: a shell that starts
+				// without integration is worth far more than no shell.
+				return []string{"-NoExit", "-Command",
+					"try { . '" + path + "' } catch {}"}
 			},
 		}, true
 	}

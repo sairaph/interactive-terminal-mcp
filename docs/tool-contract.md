@@ -245,12 +245,15 @@ replacing a prompt. If anything about it fails the shell starts exactly as it
 would have and the tools fall back to their own checks, so nothing depends on
 it working. Turn it off with `shell_integration = false`.
 
-Other shells report nothing yet. PowerShell has no hook between reading a
-command line and running it, so integration there has to go through the prompt
-function, and one that throws costs the user their prompt; it is left out until
-that is solid rather than shipped on the strength of documentation. Marks also
-do not survive `ssh` or `tmux`, because they come from the shell on the far
-side.
+PowerShell reports exit codes too, through its prompt function, which is the
+only hook it has: there is nothing that fires between reading a command line
+and running it. So it marks completions but never the start of one, and
+`command_exit` there is the status of the last command that *finished* rather
+than a statement about whatever is running now. `busy` keeps coming from the
+process tree on that platform for the same reason.
+
+zsh and fish report nothing yet. Marks also do not survive `ssh` or `tmux`,
+because they come from the shell on the far side.
 
 `wait_for` is exact. The wait ends the moment the given text appears, and what
 counts as an appearance is defined rather than guessed:

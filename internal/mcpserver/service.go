@@ -143,7 +143,9 @@ func (s *Service) registerTools() {
 			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
 			"prints as it works; settled: true only ever means output was quiet, which is what a command that " +
 			"prints nothing looks like from the moment it starts. Prefer busy. " + busyPhrase() +
-			" wait_for is exact. For output that has already scrolled past, use it_tail.",
+			" wait_for is exact. command_exit, where the shell reports it, is the status of the last command " +
+			"that finished, which is not necessarily the one you just started. " +
+			"For output that has already scrolled past, use it_tail.",
 		InputSchema: readSchema(s.settings),
 	}, s.read)
 
