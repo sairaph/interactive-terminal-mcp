@@ -8,6 +8,15 @@ on:
 permissions:
   contents: read
 
+# Three commits pushed in a minute used to mean three full runs, two of them
+# already answering a question nobody was asking any more. Only the newest is
+# kept. Deliberately not applied to release.yml or autorelease.yml: cancelling
+# a run that is midway through tagging or uploading assets is how a release
+# ends up half-published.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,14 +27,24 @@ jobs:
           go-version: '1.26.x'
           cache: true
       - run: go vet ./...
-      - run: go test ./...
       # The daemon multiplexes PTY readers, emulator writes, log writers,
       # broadcasters, and socket handlers, so the race detector runs on every
       # build rather than only on release.
+      #
+      # Only the raced run. It executes the same tests as a plain `go test`,
+      # and this suite starts real shells -- running it twice per commit spent
+      # minutes to learn nothing the second time.
       - run: go test -race ./...
       - run: CGO_ENABLED=0 go build -trimpath .
 
   cross-build:
+    # Pull requests only. A push to main that ships a release builds all six
+    # targets in release.yml minutes later, and building them here as well
+    # meant every deploy compiled the same commit twice for six platforms.
+    # Before a merge is where the answer is still useful, so that is where it
+    # runs; windows-vet below still compiles the platform-specific paths on
+    # every push, which is what actually rots.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
