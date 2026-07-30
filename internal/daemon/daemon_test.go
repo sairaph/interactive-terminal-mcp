@@ -362,7 +362,11 @@ func TestLogsReachBeyondTheScreen(t *testing.T) {
 	}
 
 	var head ipc.LogResult
-	mustCall(t, client, ipc.OpSessionLog, ipc.LogArgs{Session: "noisy", Lines: 6, FromEnd: false}, &head)
+	// Generous on purpose: the log now opens with the prompt and the echoed
+	// command line, and how many lines that occupies depends on the width of
+	// whatever prompt the machine has. A tight window made this a measurement
+	// of the runner's hostname.
+	mustCall(t, client, ipc.OpSessionLog, ipc.LogArgs{Session: "noisy", Lines: 40, FromEnd: false}, &head)
 	if !strings.Contains(strings.Join(head.Lines, "\n"), "line-1") {
 		t.Errorf("head should reach the oldest output, got %q", head.Lines)
 	}

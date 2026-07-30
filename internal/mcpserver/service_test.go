@@ -353,7 +353,7 @@ func TestTailReturnsLogAndScreen(t *testing.T) {
 		t.Errorf("tail should report the log size:\n%s", body)
 	}
 
-	body, _ = callTool(t, session, "it_head", map[string]any{"session": "noisy", "lines": 6})
+	body, _ = callTool(t, session, "it_head", map[string]any{"session": "noisy", "lines": 40})
 	if !strings.Contains(body, "line-1") {
 		t.Errorf("head should reach the oldest output:\n%s", body)
 	}
