@@ -205,8 +205,11 @@ blank_lines_trimmed: 17
 
 `wait` is a ceiling, not a sleep. The tool returns as soon as the session has
 produced no new output for the settle interval (250 ms by default), or when
-`wait` seconds have elapsed, whichever comes first. `wait: 0` returns after a
-50 ms grace period without waiting for quiet.
+`wait` seconds have elapsed, whichever comes first. Omitting it uses the
+configured `default_wait_seconds`, which is what that setting is for; every
+tool that waits uses the same one. `wait: 0` means look now: the screen is
+captured as it stands, and `wait_for` reports whether the text is already
+there rather than waiting for it to arrive.
 
 `settled: false` in the frontmatter means the wait budget expired while output
 was still arriving. The body then tells the agent to call `it_read` again with
@@ -269,6 +272,13 @@ counts as an appearance is defined rather than guessed:
 
 Nothing is excluded on the basis of when it arrived, so a command that finishes
 in a millisecond is matched exactly as a slow one is.
+
+The search runs against the screen at full width, not the trimmed version shown
+in the reply. Every interactive prompt ends in a space -- `Continue? [y/N] `,
+`Password: ` -- and trimming the haystack while leaving the needle alone meant
+none of them could ever be waited for. Text the terminal wrapped across two
+rows still reads as contiguous, because a wrapped row is full and nothing is
+inserted between its halves.
 
 ### `it_list`
 
@@ -401,7 +411,7 @@ Session `t-k3f9qa` is ready, running bash. Type into it with `it_send({"session"
 | `session` | **yes** | Session id or name. |
 | `cols` | no | Resize to this width before snapshotting. |
 | `rows` | no | Resize to this height before snapshotting. |
-| `wait` | no | Seconds to wait for output to settle; defaults to `0`. |
+| `wait` | no | Seconds to wait for output to settle; defaults to the configured `default_wait_seconds`. `0` captures the screen as it is. |
 
 Returns the visible screen. This is the tool an agent uses to check on a
 running command, to see the current state of a full-screen program, and to

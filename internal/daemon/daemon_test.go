@@ -604,3 +604,63 @@ func TestArrayCommandsAreQuotedForTheShell(t *testing.T) {
 		t.Errorf("the argument should have arrived intact:\n%s", strings.Join(created.Lines, "\n"))
 	}
 }
+
+// Every interactive prompt ends in a space. Waiting for one exactly as it
+// appears on screen has to work, or the flagship case -- answering an
+// installer's question -- fails while looking like the prompt never came.
+func TestWaitForMatchesAPromptEndingInASpace(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "prompted", Shell: "sh",
+		CommandLine: "printf 'Continue? [y/N] '; read answer; echo \"answered:$answer\"",
+		WaitMS:      20000, WaitFor: "Continue? [y/N] ",
+	}, &created)
+	if !created.Matched {
+		t.Fatalf("the prompt is on screen; waiting for it must match:\n%s",
+			strings.Join(created.Lines, "\n"))
+	}
+
+	var answered ipc.Screen
+	mustCall(t, client, ipc.OpSessionSend, ipc.SendArgs{
+		Session: "prompted", Text: "y", HasText: true, Enter: true,
+		WaitMS: 20000, WaitFor: "answered:y",
+	}, &answered)
+	if !answered.Matched {
+		t.Errorf("the answer should have been accepted:\n%s", strings.Join(answered.Lines, "\n"))
+	}
+}
+
+// wait: 0 means look now. Inventing a budget made it_read({wait_for}) block for
+// thirty seconds while its own schema said the default was zero.
+func TestWaitForWithNoBudgetAnswersImmediately(t *testing.T) {
+	_, client, _ := newTestDaemon(t)
+
+	var created ipc.Screen
+	mustCall(t, client, ipc.OpSessionNew, ipc.NewArgs{
+		Name: "quick", Shell: "sh", CommandLine: "echo ALREADY-HERE",
+		WaitMS: 20000, WaitFor: "ALREADY-HERE",
+	}, &created)
+
+	start := time.Now()
+	var absent ipc.Screen
+	mustCall(t, client, ipc.OpSessionRead,
+		ipc.ReadArgs{Session: "quick", WaitFor: "NEVER-APPEARS", WaitMS: 0}, &absent)
+	elapsed := time.Since(start)
+
+	if absent.Matched {
+		t.Error("text that is not there must not match")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("wait: 0 took %v; it should answer from the screen as it is", elapsed)
+	}
+
+	// And text that is there is found in the same single look.
+	var present ipc.Screen
+	mustCall(t, client, ipc.OpSessionRead,
+		ipc.ReadArgs{Session: "quick", WaitFor: "ALREADY-HERE", WaitMS: 0}, &present)
+	if !present.Matched {
+		t.Error("text already on screen should match without waiting")
+	}
+}

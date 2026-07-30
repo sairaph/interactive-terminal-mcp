@@ -711,13 +711,6 @@ type WaitTarget struct {
 // Wanted reports whether an exact wait was asked for.
 func (t WaitTarget) Wanted() bool { return t.Text != "" }
 
-// flattenLines joins screen rows into one string.
-//
-// Matching runs against the flattened screen so that text the terminal wrapped
-// across two rows still counts. Rows have no trailing whitespace, so joining
-// without a separator reconstructs a wrapped word exactly.
-func flattenLines(lines []string) string { return strings.Join(lines, "") }
-
 // flattenText removes line breaks from a needle so it can be matched against
 // the flattened screen.
 func flattenText(text string) string {
@@ -733,7 +726,7 @@ func (s *Session) CountOnScreen(text string) int {
 	if needle == "" {
 		return 0
 	}
-	return strings.Count(flattenLines(s.term.Snapshot().Lines), needle)
+	return strings.Count(s.term.MatchText(), needle)
 }
 
 // WaitSettled blocks until the session has produced no output for quiet, or
@@ -891,16 +884,13 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, ta
 		return s.WaitSettled(ctx, budget, quiet)
 	}
 	start := time.Now()
-	if budget <= 0 {
-		budget = 30 * time.Second
-	}
 
 	needle := flattenText(target.Text)
 	echo := flattenText(strings.TrimRight(target.Echo, "\r\n"))
 	rule := newEchoRule(needle, echo, target.Baseline)
 
 	matched := func() bool {
-		return rule.matches(flattenLines(s.term.Snapshot().Lines))
+		return rule.matches(s.term.MatchText())
 	}
 
 	// Give the echo a moment to land before the first verdict. This is no
@@ -909,6 +899,14 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, ta
 	// decided on a screen that has not caught up yet.
 	if rule.echoed > 0 {
 		s.awaitEcho(ctx, rule.witness, 300*time.Millisecond)
+	}
+
+	// A caller who asks for no wait is asking whether the text is there now.
+	// Inventing a budget here is what made it_read({wait_for}) block for thirty
+	// seconds while its own schema said the default was zero.
+	if budget <= 0 {
+		return SettleResult{Settled: matched(), Observed: true, Matched: matched(),
+			Waited: time.Since(start), Exited: !s.Running()}
 	}
 
 	deadline := time.After(budget)
@@ -947,7 +945,7 @@ func (s *Session) awaitEcho(ctx context.Context, echo string, limit time.Duratio
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if strings.Contains(flattenLines(s.term.Snapshot().Lines), echo) {
+		if strings.Contains(s.term.MatchText(), echo) {
 			return
 		}
 		select {

@@ -64,7 +64,7 @@ func (s *Service) new(ctx context.Context, _ *mcp.CallToolRequest, input newInpu
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
-	wait, err := s.waitMilliseconds(input.Wait, 2)
+	wait, err := s.waitMilliseconds(input.Wait, s.settings.DefaultWaitSeconds)
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
@@ -126,7 +126,7 @@ type readInput struct {
 }
 
 func (s *Service) read(ctx context.Context, _ *mcp.CallToolRequest, input readInput) (*mcp.CallToolResult, any, error) {
-	wait, err := s.waitMilliseconds(input.Wait, 0)
+	wait, err := s.waitMilliseconds(input.Wait, s.settings.DefaultWaitSeconds)
 	if err != nil {
 		return errorResult(err), nil, nil
 	}

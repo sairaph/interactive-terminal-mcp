@@ -307,7 +307,33 @@ func (c *Charm) Snapshot() Snapshot {
 }
 
 // lineAt renders one visible row as text. Callers hold the lock.
+// MatchText returns the visible screen as one string with every row at its full
+// width, for searching rather than reading.
+//
+// Snapshot trims each row's trailing spaces, which is right for display and
+// wrong for matching: it means a prompt like "Password: " can never be found,
+// because the space it ends with was removed from the haystack but not from
+// what the caller is looking for. Rows are joined with nothing between them so
+// that text the terminal wrapped across two rows still reads as contiguous; a
+// wrapped row is full by definition, so no padding comes between its halves.
+func (c *Charm) MatchText() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var out strings.Builder
+	out.Grow(c.cols * c.rows)
+	for y := range c.rows {
+		out.WriteString(c.rowAt(y))
+	}
+	return out.String()
+}
+
 func (c *Charm) lineAt(y int) string {
+	return strings.TrimRight(c.rowAt(y), " \t")
+}
+
+// rowAt renders one row at full width, blanks included.
+func (c *Charm) rowAt(y int) string {
 	var out strings.Builder
 	for x := 0; x < c.cols; {
 		cell := c.term.CellAt(x, y)
@@ -329,7 +355,7 @@ func (c *Charm) lineAt(y int) string {
 		out.WriteString(content)
 		x += width
 	}
-	return strings.TrimRight(out.String(), " \t")
+	return out.String()
 }
 
 // TakeEvictedLines returns lines that scrolled off the top since the previous
@@ -473,7 +499,7 @@ func lineText(line uv.Line) string {
 		out.WriteString(content)
 		x += width
 	}
-	return strings.TrimRight(out.String(), " \t")
+	return out.String()
 }
 
 var _ Terminal = (*Charm)(nil)

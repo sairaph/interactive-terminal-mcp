@@ -113,3 +113,66 @@ func TestMarksDoNotReachTheScreen(t *testing.T) {
 		}
 	}
 }
+
+// Trimming is for reading. A prompt ends in a space, so a caller waiting for
+// one has to be able to find that space; matching therefore runs against the
+// untrimmed screen while the screen shown to a reader stays trimmed.
+func TestMatchTextKeepsWhatDisplayTrims(t *testing.T) {
+	terminal := NewCharm(40, 5, 100)
+	defer terminal.Close()
+	feed(t, terminal, "Password: ")
+
+	if line := terminal.Snapshot().Lines[0]; line != "Password:" {
+		t.Errorf("the displayed line should be trimmed, got %q", line)
+	}
+	if !strings.Contains(terminal.MatchText(), "Password: ") {
+		t.Error("the searchable screen must keep the trailing space")
+	}
+}
+
+// Every row is full width, so a reader sees no padding and a searcher sees a
+// screen whose columns line up with the terminal's.
+func TestMatchTextIsTheFullGrid(t *testing.T) {
+	terminal := NewCharm(20, 4, 100)
+	defer terminal.Close()
+	feed(t, terminal, "ab\r\ncd")
+
+	text := terminal.MatchText()
+	if len(text) != 20*4 {
+		t.Errorf("expected a %d-cell grid, got %d characters", 20*4, len(text))
+	}
+	if text[:2] != "ab" || text[20:22] != "cd" {
+		t.Errorf("rows should sit at their own offsets, got %q", text[:42])
+	}
+}
+
+// Text the terminal wrapped across two rows still reads as one string: a
+// wrapped row is full by definition, so nothing is inserted between its halves.
+func TestMatchTextReadsThroughAWrap(t *testing.T) {
+	terminal := NewCharm(10, 4, 100)
+	defer terminal.Close()
+	feed(t, terminal, "abcdefghijKLMNO")
+
+	if !strings.Contains(terminal.MatchText(), "abcdefghijKLMNO") {
+		t.Errorf("a wrapped word should still match, got %q", terminal.MatchText())
+	}
+}
+
+// The trimming that display does must not lose anything a reader would notice.
+// Trailing blanks are invisible; an interior blank row is layout and stays.
+func TestDisplayTrimmingLosesOnlyInvisibleBlanks(t *testing.T) {
+	terminal := NewCharm(30, 6, 100)
+	defer terminal.Close()
+	feed(t, terminal, "top\r\n\r\n   indented   \r\nbottom")
+
+	lines := terminal.Snapshot().Lines
+	want := []string{"top", "", "   indented", "bottom"}
+	if len(lines) != len(want) {
+		t.Fatalf("expected %d lines, got %d: %q", len(want), len(lines), lines)
+	}
+	for index := range want {
+		if lines[index] != want[index] {
+			t.Errorf("line %d: got %q, want %q", index, lines[index], want[index])
+		}
+	}
+}

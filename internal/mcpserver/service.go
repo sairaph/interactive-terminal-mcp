@@ -305,7 +305,7 @@ func newSchema(settings config.Config) map[string]any {
 		"shell":    shellProperty(),
 		"cols":     colsProperty(settings),
 		"rows":     rowsProperty(settings),
-		"wait":     waitProperty(settings, 2, "Two seconds is enough for a shell prompt to appear."),
+		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Raise it for a shell that is slow to start."),
 		"wait_for": waitForProperty(false),
 	})
 }
@@ -372,7 +372,7 @@ func readSchema(settings config.Config) map[string]any {
 			"type": "integer", "minimum": 5, "maximum": 1000,
 			"description": "Resize the terminal to this height before capturing.",
 		},
-		"wait":     waitProperty(settings, 0, "Useful for a command that prints as it works."),
+		"wait":     waitProperty(settings, settings.DefaultWaitSeconds, "Useful for a command that prints as it works. Pass 0 to capture the screen as it is now."),
 		"wait_for": waitForProperty(false),
 	}, "session")
 }

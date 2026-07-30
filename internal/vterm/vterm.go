@@ -97,8 +97,13 @@ type Terminal interface {
 	Resize(cols, rows int)
 	// Size reports the current dimensions.
 	Size() (cols, rows int)
-	// Snapshot converts the visible screen to text atomically.
+	// Snapshot converts the visible screen to text atomically, with each row
+	// trimmed of trailing blanks for display.
 	Snapshot() Snapshot
+	// MatchText returns the same screen untrimmed and at full width, for
+	// searching. Trimming is a display concern; a caller waiting for a prompt
+	// that ends in a space has to be able to find it.
+	MatchText() string
 	// TakeEvictedLines returns the lines that have scrolled off the top since
 	// the previous call, oldest first, and forgets them. It is the transcript
 	// source, so exactly one caller may use it.
