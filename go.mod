@@ -13,7 +13,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/sairaph/detect-harness v0.1.0
+	github.com/sairaph/detect-harness v0.3.0
 	github.com/tiktoken-go/tokenizer v0.8.1
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.43.0
