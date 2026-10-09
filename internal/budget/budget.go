@@ -33,7 +33,7 @@ func Count(text string) (int, error) {
 // FitLines returns the longest run of lines that fits tokenLimit.
 //
 // fromEnd selects which end survives: true keeps the newest lines and drops
-// the oldest (it_tail), false keeps the oldest and drops the newest (it_head).
+// the oldest (terminal_tail), false keeps the oldest and drops the newest (terminal_head).
 // A single line larger than the budget is still returned, because returning
 // nothing would be a worse answer than returning one oversized line.
 func FitLines(lines []string, tokenLimit int, fromEnd bool) (kept []string, omitted int, err error) {

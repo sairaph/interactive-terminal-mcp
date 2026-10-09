@@ -13,7 +13,7 @@ import (
 // It is the one check that catches the environments where every path and
 // permission looks correct but no terminal can ever be created: a container
 // without /dev/pts, a stripped sandbox, or a Windows build too old for ConPTY.
-// Those fail at the first it_new otherwise, with a much less obvious message.
+// Those fail at the first terminal_new otherwise, with a much less obvious message.
 func probePTY() error {
 	terminal, err := pty.New()
 	if err != nil {

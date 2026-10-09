@@ -60,7 +60,7 @@ func documentResult(document render.Document) *mcp.CallToolResult {
 	text, err := document.String()
 	if err != nil {
 		text = "---\nerror:\n  code: render_error\n  message: the tool result could not be rendered\n" +
-			"  hint: Retry with fewer lines, for example it_tail({\"lines\":50}).\n---\n\n" +
+			"  hint: Retry with fewer lines, for example terminal_tail({\"lines\":50}).\n---\n\n" +
 			"## Error\n\nThe tool result could not be rendered.\n"
 		document.IsError = true
 	}
@@ -72,7 +72,7 @@ func documentResult(document render.Document) *mcp.CallToolResult {
 
 // --- screen output ----------------------------------------------------------
 
-// screenMetadata is the frontmatter shared by it_new, it_read, and it_send.
+// screenMetadata is the frontmatter shared by terminal_new, terminal_read, and terminal_send.
 // One shape across three tools means a model learns it once.
 type screenMetadata struct {
 	Session   string `yaml:"session"`
@@ -198,7 +198,7 @@ func waitNote(screen ipc.Screen) string {
 	}
 	id := screen.Session.ID
 	busy, busyKnown := busyState(screen)
-	waitAgain := call("it_read", map[string]any{"session": id, "wait": 10})
+	waitAgain := call("terminal_read", map[string]any{"session": id, "wait": 10})
 
 	// A shell still running its startup files has nothing in the foreground,
 	// which is the same thing an idle shell has. Every conclusion below rests
@@ -216,20 +216,20 @@ func waitNote(screen ipc.Screen) string {
 			return fmt.Sprintf(
 				"%q did not appear in %s, and a command is still running in this terminal. Keep waiting with `%s`.",
 				screen.WaitedFor, elapsed,
-				call("it_read", map[string]any{
+				call("terminal_read", map[string]any{
 					"session": id, "wait_for": screen.WaitedFor, "wait": 60}))
 		case busyKnown && !busy:
 			return fmt.Sprintf(
 				"%q did not appear in %s, and no command is running in this terminal now, so it has most likely "+
 					"finished without printing that text. The screen above is where it left off; if earlier output "+
 					"scrolled past, read it with `%s`.",
-				screen.WaitedFor, elapsed, call("it_tail", map[string]any{"session": id}))
+				screen.WaitedFor, elapsed, call("terminal_tail", map[string]any{"session": id}))
 		default:
 			return fmt.Sprintf(
 				"%q did not appear in %s. Read the screen above before assuming the command is still going: "+
 					"it may have finished without printing that text. To keep waiting, use `%s`.",
 				screen.WaitedFor, elapsed,
-				call("it_read", map[string]any{
+				call("terminal_read", map[string]any{
 					"session": id, "wait_for": screen.WaitedFor, "wait": 60}))
 		}
 	}
@@ -249,7 +249,7 @@ func waitNote(screen ipc.Screen) string {
 		return fmt.Sprintf(
 			"This screen was captured without waiting, so a command that has just started may not have printed "+
 				"anything yet. Give it time with `%s`.",
-			call("it_read", map[string]any{"session": id, "wait": 5}))
+			call("terminal_read", map[string]any{"session": id, "wait": 5}))
 	case !screen.Settled:
 		return fmt.Sprintf(
 			"Output was still arriving when the %s wait ended, so this screen may be incomplete. Check again with `%s`.",
@@ -268,7 +268,7 @@ func waitNote(screen ipc.Screen) string {
 // belongs to a command that has started.
 func startingNote(screen ipc.Screen) string {
 	id := screen.Session.ID
-	again := call("it_read", map[string]any{"session": id, "wait": 15})
+	again := call("terminal_read", map[string]any{"session": id, "wait": 15})
 
 	waited := ""
 	if screen.Observed && screen.WaitedMS > 0 {
@@ -281,7 +281,7 @@ func startingNote(screen ipc.Screen) string {
 				"still running and nothing typed into it has been read. What you sent is queued and will run as "+
 				"soon as the shell is ready. Wait for it with `%s`.",
 			waited, screen.WaitedFor,
-			call("it_read", map[string]any{"session": id, "wait_for": screen.WaitedFor, "wait": 30}))
+			call("terminal_read", map[string]any{"session": id, "wait_for": screen.WaitedFor, "wait": 30}))
 	}
 	return fmt.Sprintf(
 		"This shell has not reached a prompt yet%s: its startup files are still running, so an empty screen "+
@@ -312,11 +312,11 @@ func exampleCommand(info ipc.SessionInfo) string {
 func newGuidance(screen ipc.Screen) []string {
 	info := screen.Session
 	if !info.Running {
-		// A command given to it_new can finish before the call returns; saying
+		// A command given to terminal_new can finish before the call returns; saying
 		// so plainly beats leaving the caller to infer it from exit_code.
 		return []string{fmt.Sprintf(
 			"The command finished%s before this call returned. Read its output with `%s`.",
-			exitPhrase(info), call("it_tail", map[string]any{"session": info.ID}))}
+			exitPhrase(info), call("terminal_tail", map[string]any{"session": info.ID}))}
 	}
 	// "Ready" is a claim, and one this reply may already have contradicted two
 	// paragraphs above. A shell still running its startup files exists and can
@@ -337,14 +337,14 @@ func newGuidance(screen ipc.Screen) []string {
 			"%s. A full-screen program is running in it, so send it keystrokes with `%s`, and read it again "+
 				"later with `%s`.",
 			opening,
-			call("it_send", map[string]any{"session": info.ID, "keys": "DOWN*5"}),
-			call("it_read", map[string]any{"session": info.ID}))}
+			call("terminal_send", map[string]any{"session": info.ID, "keys": "DOWN*5"}),
+			call("terminal_read", map[string]any{"session": info.ID}))}
 	}
 	return []string{fmt.Sprintf(
 		"%s. Type into it with `%s`, and read it again later with `%s`.",
 		opening,
-		call("it_send", map[string]any{"session": info.ID, "text": exampleCommand(info)}),
-		call("it_read", map[string]any{"session": info.ID}))}
+		call("terminal_send", map[string]any{"session": info.ID, "text": exampleCommand(info)}),
+		call("terminal_read", map[string]any{"session": info.ID}))}
 }
 
 func readGuidance(screen ipc.Screen) []string {
@@ -366,19 +366,19 @@ func sendGuidance(screen ipc.Screen) []string {
 		// Pointing at the log is only useful when there is one. A full-screen
 		// program's output never scrolls, so a session that spent its life in
 		// vim or htop ends with an empty transcript, and sending the caller to
-		// it_tail would just cost a round trip to learn nothing.
+		// terminal_tail would just cost a round trip to learn nothing.
 		if info.TranscriptLines > 0 && info.LogsRetained {
 			guidance = append(guidance, fmt.Sprintf(
 				"The session ended%s while running this input. Read its full output with `%s`, "+
 					"or start a new session with `%s`.",
 				exitPhrase(info),
-				call("it_tail", map[string]any{"session": info.ID}),
-				call("it_new", map[string]any{})))
+				call("terminal_tail", map[string]any{"session": info.ID}),
+				call("terminal_new", map[string]any{})))
 		} else {
 			guidance = append(guidance, fmt.Sprintf(
 				"The session ended%s while running this input. The screen above is everything it left behind. "+
 					"Start a new session with `%s`.",
-				exitPhrase(info), call("it_new", map[string]any{})))
+				exitPhrase(info), call("terminal_new", map[string]any{})))
 		}
 		return guidance
 	}
@@ -393,7 +393,7 @@ func scrollbackNote(info ipc.SessionInfo) []string {
 	if info.AltScreen {
 		return []string{
 			"A full-screen program is running, so this screen is its complete display. " +
-				"Send keystrokes to it with the `keys` argument of it_send.",
+				"Send keystrokes to it with the `keys` argument of terminal_send.",
 		}
 	}
 	if info.TranscriptLines > 0 && info.LogsRetained {
@@ -401,12 +401,12 @@ func scrollbackNote(info ipc.SessionInfo) []string {
 			"This session's log holds %d earlier %s from above this screen. Read %s with `%s`.",
 			info.TranscriptLines, plural(info.TranscriptLines, "line", "lines"),
 			plural(info.TranscriptLines, "it", "them"),
-			call("it_tail", map[string]any{"session": info.ID, "lines": 100}))}
+			call("terminal_tail", map[string]any{"session": info.ID, "lines": 100}))}
 	}
 	return nil
 }
 
-// --- it_list ----------------------------------------------------------------
+// --- terminal_list ----------------------------------------------------------------
 
 type listMetadata struct {
 	Page       int  `yaml:"page"`
@@ -430,7 +430,7 @@ func firstRunning(rows []listRow) *listRow {
 }
 
 // listRow is what a caller needs to pick a session. Everything beyond that is
-// available from it_read or the verbose form, because a dozen fields times a
+// available from terminal_read or the verbose form, because a dozen fields times a
 // dozen sessions is a couple of thousand tokens spent to answer "which one".
 type listRow struct {
 	ID              string `yaml:"id"`
@@ -522,7 +522,7 @@ func listBody(front listMetadata, window []listRow, sessions []ipc.SessionInfo) 
 	var parts []string
 	switch {
 	case front.Total == 0:
-		return fmt.Sprintf("No terminal sessions exist. Create one with `%s`.", call("it_new", map[string]any{}))
+		return fmt.Sprintf("No terminal sessions exist. Create one with `%s`.", call("terminal_new", map[string]any{}))
 	case len(window) == 0:
 		parts = append(parts, fmt.Sprintf(
 			"No sessions on page %d; there %s %d %s across %d %s.",
@@ -545,26 +545,26 @@ func listBody(front listMetadata, window []listRow, sessions []ipc.SessionInfo) 
 	parts = append(parts, fmt.Sprintf("%s, %d running.", summary, live))
 
 	// Every suggestion below names a session that can actually accept it.
-	// Pointing it_send at a session this same reply reports as ended costs the
+	// Pointing terminal_send at a session this same reply reports as ended costs the
 	// caller a round trip to be told what it already knew.
 	running := firstRunning(window)
 	if running != nil {
 		parts = append(parts, fmt.Sprintf(
 			"Read a session with `%s`, or type into it with `%s`.",
-			call("it_read", map[string]any{"session": running.ID}),
-			call("it_send", map[string]any{"session": running.ID, "text": exampleFor(sessions, running.ID)})))
+			call("terminal_read", map[string]any{"session": running.ID}),
+			call("terminal_send", map[string]any{"session": running.ID, "text": exampleFor(sessions, running.ID)})))
 	} else {
 		// The final screen outlives the process, but the log does not
-		// necessarily outlive the retention policy, so only offer it_tail
+		// necessarily outlive the retention policy, so only offer terminal_tail
 		// where there is a log left to read.
-		recover := call("it_read", map[string]any{"session": window[0].ID})
+		recover := call("terminal_read", map[string]any{"session": window[0].ID})
 		if window[0].LogsRetained && window[0].TranscriptLines > 0 {
-			recover = call("it_tail", map[string]any{"session": window[0].ID})
+			recover = call("terminal_tail", map[string]any{"session": window[0].ID})
 		}
 		parts = append(parts, fmt.Sprintf(
 			"None of these sessions is still running, so nothing can be typed into them. "+
 				"Read what one left behind with `%s`, or start a new session with `%s`.",
-			recover, call("it_new", map[string]any{})))
+			recover, call("terminal_new", map[string]any{})))
 	}
 	if front.Retention == config.RetentionOnClose {
 		// A session vanishing from this list looks like data loss unless the
@@ -582,17 +582,17 @@ func listBody(front listMetadata, window []listRow, sessions []ipc.SessionInfo) 
 		if front.Verbose {
 			next["verbose"] = true
 		}
-		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("it_list", next)))
+		parts = append(parts, fmt.Sprintf("Continue with `%s`.", call("terminal_list", next)))
 	}
 	if !front.Verbose {
 		parts = append(parts, fmt.Sprintf(
 			"Working directory, size, and log path are omitted; add `%s` for them.",
-			call("it_list", map[string]any{"verbose": true})))
+			call("terminal_list", map[string]any{"verbose": true})))
 	}
 	return strings.Join(parts, "\n\n")
 }
 
-// --- it_kill ----------------------------------------------------------------
+// --- terminal_kill ----------------------------------------------------------------
 
 type killMetadata struct {
 	Killed       string `yaml:"killed"`
@@ -639,16 +639,16 @@ func killBody(result ipc.KillResult) string {
 				"Sent an interrupt to session %s, but it was still working %s later, so the command did not stop. "+
 					"End the session with `%s`, which cannot be ignored.",
 				name, observed,
-				call("it_kill", map[string]any{"session": result.Killed, "signal": "TERM"}))
+				call("terminal_kill", map[string]any{"session": result.Killed, "signal": "TERM"}))
 		case ipc.OutcomeQuiet:
 			return fmt.Sprintf(
 				"Sent an interrupt to session %s. Nothing further was printed in the following %s, which usually "+
 					"means the command stopped, but a slow command looks the same. Confirm with `%s` before relying on it.",
-				name, observed, call("it_read", map[string]any{"session": result.Killed}))
+				name, observed, call("terminal_read", map[string]any{"session": result.Killed}))
 		default:
 			return fmt.Sprintf(
 				"Sent an interrupt to session %s. What it did could not be established; check with `%s`.",
-				name, call("it_read", map[string]any{"session": result.Killed}))
+				name, call("terminal_read", map[string]any{"session": result.Killed}))
 		}
 	case result.Escalated:
 		parts = append(parts, fmt.Sprintf(
@@ -669,7 +669,7 @@ func killBody(result ipc.KillResult) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// --- it_tail and it_head ----------------------------------------------------
+// --- terminal_tail and terminal_head ----------------------------------------------------
 
 type logMetadata struct {
 	Session        string `yaml:"session"`
@@ -688,8 +688,8 @@ type logMetadata struct {
 }
 
 func renderLog(result ipc.LogResult, requested int, fromEnd bool, tokenBudget int) (any, string, error) {
-	// Truncation drops from the far end: it_tail keeps the newest lines and
-	// it_head keeps the oldest, so the part the caller actually asked for is
+	// Truncation drops from the far end: terminal_tail keeps the newest lines and
+	// terminal_head keeps the oldest, so the part the caller actually asked for is
 	// never the part that is thrown away.
 	kept, omitted, err := budget.FitLines(result.Lines, tokenBudget, fromEnd)
 	if err != nil {
@@ -719,17 +719,17 @@ func renderLog(result ipc.LogResult, requested int, fromEnd bool, tokenBudget in
 }
 
 func logBody(result ipc.LogResult, front logMetadata, kept []string, fromEnd bool) string {
-	tool := "it_head"
+	tool := "terminal_head"
 	which := "first"
 	if fromEnd {
-		tool, which = "it_tail", "last"
+		tool, which = "terminal_tail", "last"
 	}
 
 	var parts []string
 	if len(kept) == 0 {
 		if result.Session.Running {
 			parts = append(parts, "This session's log is empty: nothing has scrolled off its screen yet. "+
-				fmt.Sprintf("Read the screen itself with `%s`.", call("it_read", map[string]any{"session": result.Session.ID})))
+				fmt.Sprintf("Read the screen itself with `%s`.", call("terminal_read", map[string]any{"session": result.Session.ID})))
 		} else {
 			parts = append(parts, "This session's log is empty.")
 		}
@@ -781,9 +781,9 @@ func logSummary(front logMetadata, which, tool string, result ipc.LogResult) str
 		fmt.Fprintf(&summary, " Those lines are only reachable by reading `%s` directly; "+
 			"the other end of the log is a different part of the output.", front.LogPath)
 	} else if front.LinesReturned < front.TotalLines {
-		other := "it_head"
-		if tool == "it_head" {
-			other = "it_tail"
+		other := "terminal_head"
+		if tool == "terminal_head" {
+			other = "terminal_tail"
 		}
 		fmt.Fprintf(&summary, " Read the other end with `%s`.",
 			call(other, map[string]any{"session": result.Session.ID}))

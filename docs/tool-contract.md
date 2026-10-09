@@ -67,7 +67,7 @@ once it has had zero sessions and zero connected clients for 60 seconds.
 ## Local Trust Model
 
 `interactive-terminal-mcp` is a local tool acting with the authority of the
-user who runs it. `it_send` can run any command the user can run. There is no
+user who runs it. `terminal_send` can run any command the user can run. There is no
 allowlist, no sandbox, no command filtering, and no confirmation step; that is
 the feature, not an oversight. The user is responsible for what the agent is
 allowed to do, through the harness's own permission system.
@@ -107,8 +107,8 @@ session you are working in" would be shared between agents too: one creating a
 session would silently redirect another's next command into it, with no error
 and a reply that looks perfectly normal.
 
-Requiring the target removes that failure entirely. `it_new` returns the id to
-use, `it_list` finds one later, and a call that names nothing is rejected
+Requiring the target removes that failure entirely. `terminal_new` returns the id to
+use, `terminal_list` finds one later, and a call that names nothing is rejected
 rather than resolved to a guess.
 
 ### Lifecycle
@@ -121,24 +121,24 @@ build can still read it.
 ### Size
 
 Sessions are created at a typical virtual size, `160x48` by default
-(configurable). `it_new` accepts `cols` and `rows`; `it_read` accepts them too
+(configurable). `terminal_new` accepts `cols` and `rows`; `terminal_read` accepts them too
 and resizes before snapshotting, which is how an agent gives a pager or TUI
 more room. The human application resizes the session to the real terminal size
 while attached and restores the previous size on detach.
 
 ## MCP Surface
 
-Seven direct, typed tools. Every name is short and prefixed `it_`.
+Seven direct, typed tools. Every name is short and prefixed `terminal_`.
 
 | Tool | Purpose |
 |---|---|
-| `it_list` | List sessions, token-budget paginated |
-| `it_new` | Create a session and return its screen, with the id every other tool needs |
-| `it_read` | Snapshot the visible screen of a session |
-| `it_send` | Send text and/or key chords, wait, return the screen |
-| `it_kill` | Terminate a session by explicit id or name |
-| `it_tail` | Last N lines of a session log |
-| `it_head` | First N lines of a session log |
+| `terminal_list` | List sessions, token-budget paginated |
+| `terminal_new` | Create a session and return its screen, with the id every other tool needs |
+| `terminal_read` | Snapshot the visible screen of a session |
+| `terminal_send` | Send text and/or key chords, wait, return the screen |
+| `terminal_kill` | Terminate a session by explicit id or name |
+| `terminal_tail` | Last N lines of a session log |
+| `terminal_head` | First N lines of a session log |
 
 Every result is a text content block containing YAML frontmatter followed by a
 Markdown body, rendered by the shared `render.Document` used in `apis-mcp`.
@@ -150,7 +150,7 @@ operation envelope, and no loose `args` object.
 
 ### Screen snapshots
 
-`it_new`, `it_read`, and `it_send` all return a **snapshot**: the
+`terminal_new`, `terminal_read`, and `terminal_send` all return a **snapshot**: the
 exact contents of the visible screen at the moment the tool returned, as plain
 text inside a tilde fence.
 
@@ -196,14 +196,14 @@ blank_lines_trimmed: 17
 | `settled` | Output stopped changing before the wait budget expired. Absent when the call did not wait long enough to establish anything |
 | `busy` | A command still holds the terminal. Absent where that cannot be established |
 | `shell_ready` | Present only as `false`, meaning the shell has not reached a prompt yet, so nothing sent to it has run. An idle shell and a starting one look identical without it |
-| `startup_ms` | How long the shell took to reach its first prompt. Set by `it_new`, the only call that waited for it |
+| `startup_ms` | How long the shell took to reach its first prompt. Set by `terminal_new`, the only call that waited for it |
 | `waited_ms` | Milliseconds actually spent waiting |
 | `logs_retained` | Whether this session's log survives the session ending |
 | `exit_code` | Present only once the session has exited |
 
 ### Waiting
 
-`it_new` and `it_send` accept `wait`, a number of seconds from `0` to `300`.
+`terminal_new` and `terminal_send` accept `wait`, a number of seconds from `0` to `300`.
 
 `wait` is a ceiling, not a sleep. The tool returns as soon as the session has
 produced no new output for the settle interval (250 ms by default), or when
@@ -213,7 +213,7 @@ tool that waits uses the same one. `wait: 0` means look now: the screen is
 captured as it stands, and `wait_for` reports whether the text is already
 there rather than waiting for it to arrive.
 
-On `it_new`, `wait` covers the shell's own startup as well as the command. A
+On `terminal_new`, `wait` covers the shell's own startup as well as the command. A
 shell with heavy startup files takes real time to reach a prompt -- five to
 eight seconds for a bash that initialises conda -- and until it does, nothing
 typed into it has run. That time is spent inside the caller's budget rather
@@ -226,13 +226,13 @@ it simply has not run yet, and the reply says so instead of reporting that it
 finished without printing anything.
 
 `settled: false` in the frontmatter means the wait budget expired while output
-was still arriving. The body then tells the agent to call `it_read` again with
+was still arriving. The body then tells the agent to call `terminal_read` again with
 a longer wait rather than assuming the command finished. When the call did not
 wait long enough to observe anything either way, the field is absent rather
 than false: nothing was looked at, which is not the same as having looked and
 seen output still coming.
 
-This makes `it_send({"text": "ls", "wait": 5})` cheap for a fast command and
+This makes `terminal_send({"text": "ls", "wait": 5})` cheap for a fast command and
 correct for a slow one, without the agent having to guess a duration.
 
 ### Knowing whether a command has finished
@@ -275,23 +275,23 @@ because they come from the shell on the far side.
 `wait_for` is exact. The wait ends the moment the given text appears, and what
 counts as an appearance is defined rather than guessed:
 
-- Text already on the screen before `it_send` types its input is not a match.
+- Text already on the screen before `terminal_send` types its input is not a match.
   It was not produced by this call.
-- The echo of the input `it_send` types is not a match either, which is what
-  makes `it_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` work.
+- The echo of the input `terminal_send` types is not a match either, which is what
+  makes `terminal_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` work.
   The occurrences the typed line itself contains are discounted, so the wait
   ends on the output rather than on the command line.
-- A call that types nothing (`it_read`) is judged by the rules of the send
+- A call that types nothing (`terminal_read`) is judged by the rules of the send
   before it. The session remembers the last input typed into it and the screen
   as it stood immediately before, and both are discounted. So polling with
-  `it_read({"wait_for": "BUILT"})` after that same `it_send` waits for the
+  `terminal_read({"wait_for": "BUILT"})` after that same `terminal_send` waits for the
   output, not for the command line still sitting on screen.
 
   This is the one rule that reads as a restriction rather than a convenience,
   and it is the one that matters most in practice: an agent that starts a
   command and then polls for its marker is the normal way these tools get used,
   and the echo of that command satisfies a naive screen test from the moment it
-  is typed. `it_read` used to return `matched: true` after 0 ms for exactly
+  is typed. `terminal_read` used to return `matched: true` after 0 ms for exactly
   that sequence, which told the agent a build had finished before it started.
   A session nobody has typed into has nothing to discount, and `wait_for` there
   is the plain question of whether the text is on the screen.
@@ -306,7 +306,7 @@ none of them could ever be waited for. Text the terminal wrapped across two
 rows still reads as contiguous, because a wrapped row is full and nothing is
 inserted between its halves.
 
-### `it_list`
+### `terminal_list`
 
 | Argument | Required | Meaning |
 |---|---:|---|
@@ -348,15 +348,15 @@ sessions:
 ```
 
 The body explains how to read a listed session, and includes an exact
-`it_list({"page": 2})` continuation when another page exists.
+`terminal_list({"page": 2})` continuation when another page exists.
 
 With no sessions at all:
 
 ```markdown
-No terminal sessions exist. Create one with `it_new({})`.
+No terminal sessions exist. Create one with `terminal_new({})`.
 ```
 
-### `it_new`
+### `terminal_new`
 
 | Argument | Required | Meaning |
 |---|---:|---|
@@ -365,7 +365,7 @@ No terminal sessions exist. Create one with `it_new({})`.
 
 ### Names identify one session
 
-A name belongs to exactly one session. `it_new` rejects a name held by a
+A name belongs to exactly one session. `terminal_new` rejects a name held by a
 *running* session with `name_conflict`, and accepts one whose holder has ended
 -- naming each build `build` is the intended workflow. The ended session gives
 the name up at that moment and keeps only its id, so a name never resolves to
@@ -373,8 +373,8 @@ two sessions.
 
 That last part is load-bearing. While both held the name, every lookup had to
 choose between them, and the choice came out of map iteration order: the same
-`it_send({"session": "build"})` reached the live session on one call and the
-ended one on the next. `it_kill` inherited it and could report `already_ended`
+`terminal_send({"session": "build"})` reached the live session on one call and the
+ended one on the next. `terminal_kill` inherited it and could report `already_ended`
 as a success while the live session kept running.
 
 Renaming applies the same rule, and a daemon restart re-establishes it across
@@ -427,10 +427,10 @@ Body when the session started cleanly:
 lael@host:~/project$
 ~~~
 
-Session `t-k3f9qa` is ready, running bash. Type into it with `it_send({"session":"t-k3f9qa","text":"ls -la"})`, and read it again later with `it_read({"session":"t-k3f9qa"})`.
+Session `t-k3f9qa` is ready, running bash. Type into it with `terminal_send({"session":"t-k3f9qa","text":"ls -la"})`, and read it again later with `terminal_read({"session":"t-k3f9qa"})`.
 ````
 
-### `it_read`
+### `terminal_read`
 
 | Argument | Required | Meaning |
 |---|---:|---|
@@ -441,21 +441,21 @@ Session `t-k3f9qa` is ready, running bash. Type into it with `it_send({"session"
 
 Returns the visible screen. This is the tool an agent uses to check on a
 running command, to see the current state of a full-screen program, and to
-confirm what a previous `it_send` produced.
+confirm what a previous `terminal_send` produced.
 
 Supplying `cols` or `rows` resizes the session first and delivers `SIGWINCH` to
 the child, then waits for the settle interval so a redrawing TUI is captured
 after the redraw rather than during it.
 
 If the session has exited, the final screen is returned with `running: false`
-and `exit_code`, and the body points at `it_tail` for what scrolled away. The
+and `exit_code`, and the body points at `terminal_tail` for what scrolled away. The
 screen is copied out of the emulator when the session is retired and kept with
 the entry, so this holds for the rest of the retention window and not merely
 until the daemon reclaims the terminal. Only a session inherited from an
 earlier daemon has no screen to show, and that is what the error about a
 previous daemon now means.
 
-### `it_send`
+### `terminal_send`
 
 | Argument | Required | Meaning |
 |---|---:|---|
@@ -470,7 +470,7 @@ sent first, then `keys`.
 
 `text` is typed verbatim, exactly as if the user had typed it. `enter` defaults
 to `true` and appends a carriage return, so
-`it_send({"text": "echo \"This is a test\""})` runs the command. `enter` is
+`terminal_send({"text": "echo \"This is a test\""})` runs the command. `enter` is
 ignored when `text` already ends in a newline or carriage return. Set
 `enter: false` to fill in a prompt field without submitting it.
 
@@ -479,7 +479,7 @@ than a trailing one, the text is wrapped in paste markers so editors receive it
 as a paste instead of as a sequence of commands.
 
 Writing to an exited session is an error that reports the exit code and points
-at `it_new`.
+at `terminal_new`.
 
 #### The key language
 
@@ -513,7 +513,7 @@ An unparseable chord is a validation error that names the offending token and
 lists the accepted forms. Nothing is sent when parsing fails, so a typo in the
 fifth chord never leaves the terminal in a half-typed state.
 
-### `it_kill`
+### `terminal_kill`
 
 | Argument | Required | Meaning |
 |---|---:|---|
@@ -534,7 +534,7 @@ the command being interrupted lives on a pty on the far side of that client,
 and the byte is passed along to it: the client is holding this terminal in raw
 mode precisely so that control characters are data to it and signals only at
 the other end. Anything that signals locally instead hits the client and takes
-the whole nested session down with it. `it_send({"keys": "CTRL+C"})` writes the
+the whole nested session down with it. `terminal_send({"keys": "CTRL+C"})` writes the
 same byte and is interchangeable.
 
 After `TERM`, the daemon waits up to 5 seconds for the process to exit and then
@@ -555,21 +555,21 @@ log_path: null
 is null; under any other policy the path stays valid until retention expires.
 
 The same policy decides how long a session stays listed at all. Under
-`on_close` an ended session leaves `it_list` as soon as it ends, because there
-is nothing left to point at; `it_list` carries the policy as `retention` and
+`on_close` an ended session leaves `terminal_list` as soon as it ends, because there
+is nothing left to point at; `terminal_list` carries the policy as `retention` and
 says so in its body, since a session quietly disappearing otherwise looks like
 data loss. Under a retention window ended sessions stay listed until it
 expires.
 
-### `it_tail` and `it_head`
+### `terminal_tail` and `terminal_head`
 
 | Argument | Required | Meaning |
 |---|---:|---|
 | `session` | **yes** | Session id or name. |
 | `lines` | no | Lines requested; defaults to `100`, maximum `5000`. |
-| `screen` | no | `it_tail` only. Append the live screen after the log lines. Defaults to `true`, and should stay on: the log holds only what has scrolled off, so with it off the newest output is missing entirely. |
+| `screen` | no | `terminal_tail` only. Append the live screen after the log lines. Defaults to `true`, and should stay on: the log holds only what has scrolled off, so with it off the newest output is missing entirely. |
 
-`it_tail` returns the last `lines` lines of the session transcript, `it_head`
+`terminal_tail` returns the last `lines` lines of the session transcript, `terminal_head`
 the first `lines` lines. Both read the durable on-disk transcript, so they
 reach further back than the in-memory scrollback and still work after the
 daemon has restarted.
@@ -578,13 +578,13 @@ The transcript contains lines as they scrolled off the top of the screen, plus
 the visible screen at the moment the session exited. Output written while a
 full-screen program owned the alternate screen is **not** in the transcript,
 because alternate-screen content does not scroll into history in any terminal.
-That is why `it_tail` appends the live screen by default: for a session sitting
+That is why `terminal_tail` appends the live screen by default: for a session sitting
 in `vim` or `htop`, the log is the history from before the program started and
 the screen is the current state. The body labels the two parts.
 
 Both tools apply the configured read token budget. When the requested lines do
-not fit, the response is truncated **from the far end**, so `it_tail` always
-keeps the newest lines and `it_head` always keeps the oldest.
+not fit, the response is truncated **from the far end**, so `terminal_tail` always
+keeps the newest lines and `terminal_head` always keeps the oldest.
 
 ```yaml
 session: t-k3f9qa
@@ -636,8 +636,8 @@ budget is reached, so different pages may contain different numbers of records.
 
 | Output class | Default approximate budget |
 |---|---:|
-| `it_list` | 2,000 tokens |
-| `it_tail`, `it_head` | 4,000 tokens |
+| `terminal_list` | 2,000 tokens |
+| `terminal_tail`, `terminal_head` | 4,000 tokens |
 | Screen snapshots | not budgeted; bounded by the terminal size |
 
 Token estimates use OpenAI's `o200k_base` encoding internally. That is an
@@ -673,7 +673,7 @@ explanation, matching `apis-mcp`:
 error:
   code: session_not_found
   message: no session matches "buidl"
-  hint: Call it_list() to see existing sessions, or it_new() to create one.
+  hint: Call terminal_list() to see existing sessions, or terminal_new() to create one.
   fields:
     session: buidl
 ```
@@ -683,7 +683,7 @@ error:
 
 no session matches "buidl"
 
-Call it_list() to see existing sessions, or it_new() to create one.
+Call terminal_list() to see existing sessions, or terminal_new() to create one.
 ```
 
 | Code | Raised when |
@@ -691,7 +691,7 @@ Call it_list() to see existing sessions, or it_new() to create one.
 | `invalid_input` | Schema-valid but semantically wrong arguments, including unparseable `keys` |
 | `session_not_found` | `session` matches no live or retained session |
 | `session_exited` | Input was sent to a session whose process has ended |
-| `name_conflict` | `it_new` was given a name already held by a live session |
+| `name_conflict` | `terminal_new` was given a name already held by a live session |
 | `daemon_unavailable` | The daemon could not be started or reached |
 | `cancelled` | The MCP request context was cancelled |
 | `internal_error` | Anything else |
@@ -700,8 +700,8 @@ Every hint names a concrete next tool call.
 
 ## Confirmed Naming Rules
 
-- Tools are `it_list`, `it_new`, `it_read`, `it_send`, `it_kill`,
-  `it_tail`, `it_head`.
+- Tools are `terminal_list`, `terminal_new`, `terminal_read`, `terminal_send`, `terminal_kill`,
+  `terminal_tail`, `terminal_head`.
 - A session is addressed by `session`, accepting an id or a name.
 - Literal typing is `text`; key chords are `keys`.
 - Pagination is `page`, with no agent-facing `limit`.

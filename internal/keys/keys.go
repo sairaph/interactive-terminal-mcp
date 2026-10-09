@@ -1,4 +1,4 @@
-// Package keys implements the key-chord language accepted by it_send's `keys`
+// Package keys implements the key-chord language accepted by terminal_send's `keys`
 // argument, and encodes parsed chords into the byte sequences a terminal
 // program expects.
 //

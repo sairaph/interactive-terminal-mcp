@@ -162,8 +162,8 @@ func TestParseRename(t *testing.T) {
 // The daemon's agent-facing hints name tool calls; a person at a terminal
 // needs the equivalent shell command instead.
 func TestHintsAreRewrittenForPeople(t *testing.T) {
-	hint := humanHint("Call it_list() to see existing sessions, or it_new({}) to create one.")
-	if strings.Contains(hint, "it_list()") || strings.Contains(hint, "it_new({})") {
+	hint := humanHint("Call terminal_list() to see existing sessions, or terminal_new({}) to create one.")
+	if strings.Contains(hint, "terminal_list()") || strings.Contains(hint, "terminal_new({})") {
 		t.Errorf("tool calls should be rewritten for a person, got %q", hint)
 	}
 	if !strings.Contains(hint, "interactive-terminal-mcp ls") {

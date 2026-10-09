@@ -93,13 +93,13 @@ func TestUnsettledScreenWarnsAndOffersARetry(t *testing.T) {
 	if !strings.Contains(body, "still arriving") {
 		t.Errorf("body should warn the screen may be incomplete:\n%s", body)
 	}
-	if !strings.Contains(body, `it_read({"session":"t-k3f9qa","wait":10})`) {
+	if !strings.Contains(body, `terminal_read({"session":"t-k3f9qa","wait":10})`) {
 		t.Errorf("body should offer an exact retry call:\n%s", body)
 	}
 }
 
 // A full-screen program's display is the whole story, and its output never
-// reaches the log, so the guidance must say so rather than pointing at it_tail.
+// reaches the log, so the guidance must say so rather than pointing at terminal_tail.
 func TestAlternateScreenGuidance(t *testing.T) {
 	info := sampleSession()
 	info.AltScreen = true
@@ -118,7 +118,7 @@ func TestAlternateScreenGuidance(t *testing.T) {
 }
 
 // A session that lived entirely inside a full-screen program has an empty log,
-// so sending the caller to it_tail would waste a whole round trip.
+// so sending the caller to terminal_tail would waste a whole round trip.
 func TestEndedSessionWithNoLogDoesNotSuggestTail(t *testing.T) {
 	info := sampleSession()
 	info.Running = false
@@ -129,7 +129,7 @@ func TestEndedSessionWithNoLogDoesNotSuggestTail(t *testing.T) {
 	screen := ipc.Screen{Session: info, Lines: []string{}, Settled: true, Observed: true}
 	body := text(t, successResult(screenFront(screen), screenBody(screen, sendGuidance(screen))))
 
-	if strings.Contains(body, "it_tail") {
+	if strings.Contains(body, "terminal_tail") {
 		t.Errorf("an empty log should not be advertised:\n%s", body)
 	}
 	if !strings.Contains(body, "everything it left behind") {
@@ -155,7 +155,7 @@ func TestEndedSessionWithLogSuggestsTail(t *testing.T) {
 	if !strings.Contains(body, "with exit code 1") {
 		t.Errorf("body should state the exit code in prose:\n%s", body)
 	}
-	if !strings.Contains(body, `it_tail({"session":"t-k3f9qa"})`) {
+	if !strings.Contains(body, `terminal_tail({"session":"t-k3f9qa"})`) {
 		t.Errorf("body should offer an exact tail call:\n%s", body)
 	}
 }
@@ -192,7 +192,7 @@ func TestEmptyListSuggestsCreating(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := text(t, successResult(front, body))
-	if !strings.Contains(document, "it_new({})") {
+	if !strings.Contains(document, "terminal_new({})") {
 		t.Errorf("an empty list should say how to create a session:\n%s", document)
 	}
 }
@@ -217,7 +217,7 @@ func TestListPaginatesUnderATightBudget(t *testing.T) {
 	if len(metadata.Sessions) == len(sessions) {
 		t.Error("a tight budget should not fit every session on one page")
 	}
-	if !strings.Contains(body, `it_list({"page":2})`) {
+	if !strings.Contains(body, `terminal_list({"page":2})`) {
 		t.Errorf("body should offer the next page:\n%s", body)
 	}
 }
@@ -347,7 +347,7 @@ func TestKillResultShape(t *testing.T) {
 	if !strings.Contains(document, "a slow command looks the same") {
 		t.Errorf("the inference should be marked as one:\n%s", document)
 	}
-	if !strings.Contains(document, "it_read") {
+	if !strings.Contains(document, "terminal_read") {
 		t.Errorf("the caller should be offered a way to confirm:\n%s", document)
 	}
 
@@ -370,7 +370,7 @@ func TestKillResultShape(t *testing.T) {
 func TestErrorResultShape(t *testing.T) {
 	failure := &ipc.Error{
 		Code: ipc.CodeSessionNotFound, Message: `no session matches "buidl"`,
-		Hint:   "Call it_list() to see existing sessions, or it_new() to create one.",
+		Hint:   "Call terminal_list() to see existing sessions, or terminal_new() to create one.",
 		Fields: map[string]any{"session": "buidl"},
 	}
 	result := errorResult(failure)
@@ -380,7 +380,7 @@ func TestErrorResultShape(t *testing.T) {
 	body := text(t, result)
 	requireDocument(t, body)
 	for _, want := range []string{
-		"code: session_not_found", "buidl", "hint:", "## Error", "it_list()",
+		"code: session_not_found", "buidl", "hint:", "## Error", "terminal_list()",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("error document missing %q:\n%s", want, body)
@@ -409,9 +409,9 @@ func TestSchemasDeclareTheDocumentedShape(t *testing.T) {
 	// daemon, so a tool that could fall back to some current session would
 	// route one agent's call into another's terminal.
 	for name, schema := range map[string]map[string]any{
-		"it_kill": killSchema(), "it_read": readSchema(settings),
-		"it_send": sendSchema(settings), "it_tail": logSchema(true),
-		"it_head": logSchema(false),
+		"terminal_kill": killSchema(), "terminal_read": readSchema(settings),
+		"terminal_send": sendSchema(settings), "terminal_tail": logSchema(true),
+		"terminal_head": logSchema(false),
 	} {
 		required, _ := schema["required"].([]string)
 		if len(required) != 1 || required[0] != "session" {
@@ -420,10 +420,10 @@ func TestSchemasDeclareTheDocumentedShape(t *testing.T) {
 	}
 
 	for name, schema := range map[string]map[string]any{
-		"it_list": listSchema(),
-		"it_new":  newSchema(settings), "it_read": readSchema(settings),
-		"it_send": sendSchema(settings), "it_tail": logSchema(true),
-		"it_head": logSchema(false),
+		"terminal_list": listSchema(),
+		"terminal_new":  newSchema(settings), "terminal_read": readSchema(settings),
+		"terminal_send": sendSchema(settings), "terminal_tail": logSchema(true),
+		"terminal_head": logSchema(false),
 	} {
 		if schema["additionalProperties"] != false {
 			t.Errorf("%s should reject unknown arguments", name)
@@ -528,7 +528,7 @@ func TestBudgetTruncationPointsAtTheFileNotTheOtherEnd(t *testing.T) {
 		t.Errorf("the file is the only way to reach the omitted lines:\n%s", body)
 	}
 	if strings.Contains(body, "Read the other end with") {
-		t.Errorf("it_head cannot reach the middle of the range:\n%s", body)
+		t.Errorf("terminal_head cannot reach the middle of the range:\n%s", body)
 	}
 }
 
@@ -612,10 +612,10 @@ func TestToolTextIsForwardFacing(t *testing.T) {
 		"instructions": Instructions,
 	}
 	schemas := map[string]map[string]any{
-		"it_list": listSchema(),
-		"it_new":  newSchema(settings), "it_read": readSchema(settings),
-		"it_send": sendSchema(settings), "it_kill": killSchema(),
-		"it_tail": logSchema(true), "it_head": logSchema(false),
+		"terminal_list": listSchema(),
+		"terminal_new":  newSchema(settings), "terminal_read": readSchema(settings),
+		"terminal_send": sendSchema(settings), "terminal_kill": killSchema(),
+		"terminal_tail": logSchema(true), "terminal_head": logSchema(false),
 	}
 	for name, schema := range schemas {
 		properties, _ := schema["properties"].(map[string]any)
@@ -796,7 +796,7 @@ func TestWaitForMissOverABusyTerminalSaysToKeepWaiting(t *testing.T) {
 
 // --- guidance that matches the state it is describing -----------------------
 
-// Suggesting it_send on a session this same reply reports as ended costs a
+// Suggesting terminal_send on a session this same reply reports as ended costs a
 // round trip to be told what the caller already knew.
 func TestListDoesNotSuggestTypingIntoEndedSessions(t *testing.T) {
 	code := 0
@@ -808,10 +808,10 @@ func TestListDoesNotSuggestTypingIntoEndedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(body, "it_send") {
+	if strings.Contains(body, "terminal_send") {
 		t.Errorf("nothing here can be typed into:\n%s", body)
 	}
-	if !strings.Contains(body, "it_new") {
+	if !strings.Contains(body, "terminal_new") {
 		t.Errorf("the caller needs a way forward:\n%s", body)
 	}
 }
@@ -828,10 +828,10 @@ func TestListSuggestsARunningSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, `it_send({"session":"t-bbb222"`) {
+	if !strings.Contains(body, `terminal_send({"session":"t-bbb222"`) {
 		t.Errorf("the running session should be the one offered:\n%s", body)
 	}
-	if strings.Contains(body, `it_send({"session":"t-aaa111"`) {
+	if strings.Contains(body, `terminal_send({"session":"t-aaa111"`) {
 		t.Errorf("the ended session must not be offered for input:\n%s", body)
 	}
 }
@@ -964,7 +964,7 @@ func TestUnknownShellExampleIsPortable(t *testing.T) {
 	}
 }
 
-// it_list's hint had its own hard-coded POSIX example, so a Windows session
+// terminal_list's hint had its own hard-coded POSIX example, so a Windows session
 // was told to run pwd no matter what exampleCommand said.
 func TestListHintUsesTheSessionsOwnSyntax(t *testing.T) {
 	sessions := []ipc.SessionInfo{{ID: "t-aaa111", Running: true, Shell: "Command Prompt"}}

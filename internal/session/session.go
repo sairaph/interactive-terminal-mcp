@@ -609,7 +609,7 @@ func (s *Session) reap() {
 	}
 
 	// The visible screen never scrolled off, so it is not in the transcript.
-	// Appending it on exit is what lets it_tail show how a command ended.
+	// Appending it on exit is what lets terminal_tail show how a command ended.
 	snapshot := s.term.Snapshot()
 	s.logs.writeTranscript(s.term.TakeEvictedLines())
 	if len(snapshot.Lines) > 0 {
@@ -810,7 +810,7 @@ func (s *Session) RawPath() string {
 // TranscriptLines reports how many lines the transcript holds.
 func (s *Session) TranscriptLines() int { return s.logs.lineCount() }
 
-// Flush makes buffered log writes visible to readers. it_tail and it_head call
+// Flush makes buffered log writes visible to readers. terminal_tail and terminal_head call
 // it first so they never miss output the session has already produced.
 func (s *Session) Flush() { s.logs.flush() }
 
@@ -1093,7 +1093,7 @@ func (s *Session) WaitUntil(ctx context.Context, budget, quiet time.Duration, ta
 	}
 
 	// A caller who asks for no wait is asking whether the text is there now.
-	// Inventing a budget here is what made it_read({wait_for}) block for thirty
+	// Inventing a budget here is what made terminal_read({wait_for}) block for thirty
 	// seconds while its own schema said the default was zero.
 	if budget <= 0 {
 		return SettleResult{Settled: matched(), Observed: true, Matched: matched(),

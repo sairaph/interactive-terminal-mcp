@@ -142,7 +142,7 @@ Session logs — when should logs from closed sessions be deleted?
      Never
 ```
 
-Logs are what let `it_tail` and `it_head` reach past the visible screen. Running
+Logs are what let `terminal_tail` and `terminal_head` reach past the visible screen. Running
 sessions are never swept, whatever the setting. Change it later with
 `interactive-terminal-mcp configure`, or press `c` in the interactive app.
 
@@ -177,33 +177,33 @@ current session would let one agent's command land in another's terminal.
 
 | Tool | Description |
 | --- | --- |
-| `it_list` | List all sessions, running and recently ended, newest activity first |
-| `it_new` | Create a session and return its first screen, with the id every other tool needs. `command` is typed into it and the session stays open afterwards |
-| `it_kill` | End a session (**requires** an explicit session; never inferred) |
+| `terminal_list` | List all sessions, running and recently ended, newest activity first |
+| `terminal_new` | Create a session and return its first screen, with the id every other tool needs. `command` is typed into it and the session stays open afterwards |
+| `terminal_kill` | End a session (**requires** an explicit session; never inferred) |
 
 ### Using a session
 
 | Tool | Description |
 | --- | --- |
-| `it_read` | Return a session's current screen, optionally resizing first |
-| `it_send` | Type text and/or keystrokes, then return the screen |
-| `it_tail` | Recent log lines plus the live screen |
-| `it_head` | Earliest log lines |
+| `terminal_read` | Return a session's current screen, optionally resizing first |
+| `terminal_send` | Type text and/or keystrokes, then return the screen |
+| `terminal_tail` | Recent log lines plus the live screen |
+| `terminal_head` | Earliest log lines |
 
 A typical agent flow:
 
 ```js
-it_list({})                                     // is a session already open?
-it_new({"name": "dev"})                         // no - create one
-it_send({"session": "dev", "text": "npm run dev", "wait": 10})
-it_read({"session": "dev"})                     // check on it later
-it_tail({"session": "dev", "lines": 50})        // what scrolled past?
-it_kill({"session": "dev"})                     // done
+terminal_list({})                                     // is a session already open?
+terminal_new({"name": "dev"})                         // no - create one
+terminal_send({"session": "dev", "text": "npm run dev", "wait": 10})
+terminal_read({"session": "dev"})                     // check on it later
+terminal_tail({"session": "dev", "lines": 50})        // what scrolled past?
+terminal_kill({"session": "dev"})                     // done
 ```
 
 ### Keystrokes
 
-`it_send`'s `keys` argument takes semicolon-separated chords:
+`terminal_send`'s `keys` argument takes semicolon-separated chords:
 
 | Form | Example |
 | --- | --- |
@@ -213,9 +213,9 @@ it_kill({"session": "dev"})                     // done
 | Literal text | `"hello world"`, or an unquoted run like `:wq` |
 
 ```js
-it_send({"keys": "i; \"hello from vim\"; ESC"})
-it_send({"keys": "ESC; :wq; ENTER"})
-it_send({"keys": "CTRL+B; PAGE_UP"})
+terminal_send({"keys": "i; \"hello from vim\"; ESC"})
+terminal_send({"keys": "ESC; :wq; ENTER"})
+terminal_send({"keys": "CTRL+B; PAGE_UP"})
 ```
 
 Arrows and Home/End are encoded according to the modes the running program has
@@ -244,13 +244,13 @@ comes from the terminal's own foreground process group rather than from timing,
 so `busy: true` is proof a command is still running and `busy: false` is strong
 evidence that none is. `wait_for` is exact - the call ends the moment the given
 text appears, and the echo of the command being typed is discounted, so
-`it_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` ends on the
+`terminal_send({"text": "make && echo BUILT", "wait_for": "BUILT"})` ends on the
 output rather than on the command line.
 
 ### Full-screen programs
 
 Output from a program using the alternate screen never scrolls, so it is
-correctly absent from the log. That is why `it_tail` returns the live screen
+correctly absent from the log. That is why `terminal_tail` returns the live screen
 alongside the log by default, and labels the two:
 
 ````markdown
@@ -332,7 +332,7 @@ Every operation is also a one-shot command:
 | `doctor` | Diagnose the installation |
 | `config` | Show settings and their paths |
 
-`kill` requires a session for the same reason `it_kill` does: ending the wrong
+`kill` requires a session for the same reason `terminal_kill` does: ending the wrong
 terminal cannot be undone.
 
 ## How it works
@@ -364,7 +364,7 @@ owner-only DACL on Windows. No TCP port is ever opened.
 
 ### Trust model
 
-This is a local tool that runs with your authority. `it_send` can run anything
+This is a local tool that runs with your authority. `terminal_send` can run anything
 you can run: there is no allowlist, no sandbox, and no command filtering. That
 is the feature - it is your console, reachable by your agent. Control what the
 agent may do through your AI client's own permission system.

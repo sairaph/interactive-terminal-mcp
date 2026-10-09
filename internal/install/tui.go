@@ -546,7 +546,7 @@ func (m *installModel) viewRetention() string {
 		fmt.Fprintf(&out, " %s %s %s\n", cursor, dot, label)
 	}
 
-	out.WriteString("\n" + styleDim.Render("  Logs let it_tail and it_head reach past the visible screen.\n  Running sessions are never affected."))
+	out.WriteString("\n" + styleDim.Render("  Logs let terminal_tail and terminal_head reach past the visible screen.\n  Running sessions are never affected."))
 	if m.message != "" {
 		out.WriteString("\n\n  " + m.message)
 	}

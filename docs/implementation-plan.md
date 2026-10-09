@@ -171,11 +171,11 @@ cannot slow down tool calls.
 | File | Content | Cap |
 |---|---|---|
 | `raw.log` | Exact PTY bytes. Feeds human attach replay and debugging. | 32 MiB, rotates once to `raw.log.1` |
-| `transcript.log` | UTF-8 text, one line per line evicted from the top of the screen, plus the final screen on exit. Feeds `it_tail` / `it_head`. | 64 MiB / 200k lines, rotates once |
+| `transcript.log` | UTF-8 text, one line per line evicted from the top of the screen, plus the final screen on exit. Feeds `terminal_tail` / `terminal_head`. | 64 MiB / 200k lines, rotates once |
 | `meta.json` | id, name, command, cwd, size, timestamps, exit code. Lets a restarted daemon list retained sessions. | — |
 
 Both are buffered and flushed on a 200 ms timer, on settle, and on exit.
-`it_head` seeks from the start; `it_tail` reads backwards in 64 KiB chunks so a
+`terminal_head` seeks from the start; `terminal_tail` reads backwards in 64 KiB chunks so a
 large transcript is not loaded to answer a 100-line request.
 
 Alternate-screen output never enters `transcript.log`, because it never
@@ -248,7 +248,7 @@ disconnect — only an explicit `daemon.stop --kill` does, and the human
 application confirms first.
 
 Startup recovery: session directories on disk whose processes are gone are
-loaded as `exited` records so `it_list`, `it_tail`, and `it_head` still work
+loaded as `exited` records so `terminal_list`, `terminal_tail`, and `terminal_head` still work
 after a daemon restart. Their PTYs are not resurrected.
 
 ### `internal/mcpserver` — the tools
@@ -263,7 +263,7 @@ Mirrors `apis-mcp/internal/mcpserver` exactly in shape:
   `errorDetails`.
 - `snapshot.go` — the shared snapshot frontmatter and fenced-screen body used
   by four tools.
-- `logs.go` — `it_tail` / `it_head` far-end truncation and the
+- `logs.go` — `terminal_tail` / `terminal_head` far-end truncation and the
   omitted-lines-plus-path body.
 
 Handlers are thin: validate, call `ipc.Client`, render. No business logic.
@@ -334,12 +334,12 @@ daemon and each MCP process, written atomically through `fsx.Replace`.
 ```toml
 version = 1
 
-list_token_budget = 2000      # it_list
-read_token_budget = 4000      # it_tail, it_head
+list_token_budget = 2000      # terminal_list
+read_token_budget = 4000      # terminal_tail, terminal_head
 
 default_cols = 160
 default_rows = 48
-default_wait_seconds = 5      # it_send
+default_wait_seconds = 5      # terminal_send
 settle_quiet_ms = 250
 maximum_wait_seconds = 300
 
@@ -397,7 +397,7 @@ Session logs — when should logs from closed sessions be deleted?
      After 1 month
      Never
 
-   Logs let it_tail and it_head reach past the visible screen.
+   Logs let terminal_tail and terminal_head reach past the visible screen.
 
    up/down move · enter select · q cancel
 ```
@@ -489,8 +489,8 @@ handlers. `-race` runs on every CI job, not only on release.
 |---|---|
 | `keys` | Table-driven: every named key and modifier combination, both DECCKM states, repeats, quoted literals, and every rejection case. Pure functions, no fixtures. |
 | `vterm` | Feed recorded escape-sequence fixtures and assert the extracted plain text, cursor, alt-screen flag, and evicted lines. Includes wide characters, combining marks, and a resize mid-stream. |
-| `session` | Real PTYs running `sh -c`. Assert: prompt appears, `echo` round-trips, settle returns early on quiet, settle reports `settled:false` on a chatty loop, exit code is captured, transcript excludes alt-screen output, `it_tail`-style backward reads match a forward read. |
-| Full-screen TUI | End-to-end golden tests driving `vi` (POSIX-guaranteed) through `it_send` keys and asserting screen contents. Skipped when `vi` is absent. |
+| `session` | Real PTYs running `sh -c`. Assert: prompt appears, `echo` round-trips, settle returns early on quiet, settle reports `settled:false` on a chatty loop, exit code is captured, transcript excludes alt-screen output, `terminal_tail`-style backward reads match a forward read. |
+| Full-screen TUI | End-to-end golden tests driving `vi` (POSIX-guaranteed) through `terminal_send` keys and asserting screen contents. Skipped when `vi` is absent. |
 | `ipc` / `daemon` | In-process socket pair. Concurrent clients, autostart race, singleton lock race, stale-socket recovery, retention sweep, restart recovery of exited sessions. |
 | `budget` | Ported from `apis-mcp` unchanged. |
 | `mcpserver` | In-memory MCP transport against a fake IPC client. Golden-file assertions on rendered documents, exactly as `apis-mcp/internal/mcpserver/render_sample_test.go` does. |
@@ -527,8 +527,8 @@ but older and weaker on truecolor and modern DEC modes; swapping means
 rewriting one adapter file.
 
 **Alternate-screen output is absent from the transcript.** Correct terminal
-behavior, but surprising to an agent that runs `htop` and then calls `it_tail`.
-Mitigated by `it_tail` appending the live screen by default and by the body
+behavior, but surprising to an agent that runs `htop` and then calls `terminal_tail`.
+Mitigated by `terminal_tail` appending the live screen by default and by the body
 labeling both parts.
 
 **Windows ConPTY differs.** No process groups, no real signals, and ConPTY
@@ -560,10 +560,10 @@ agent-facing surface:
 1. **Argument names.** The brief used `string=` and `keyboard=`; the contract
    uses `text` and `keys`, which are shorter and read better in a tool call.
    Easy to change before implementation, painful after.
-2. **`enter` defaults to `true`.** `it_send({"text":"echo hi"})` runs the
+2. **`enter` defaults to `true`.** `terminal_send({"text":"echo hi"})` runs the
    command, which matches the example in the brief, at the cost of a small
    piece of implicit behavior. `enter: false` opts out.
-3. **Resizing lives on `it_read`.** Rather than an eighth tool, `it_read` accepts
+3. **Resizing lives on `terminal_read`.** Rather than an eighth tool, `terminal_read` accepts
    `cols`/`rows` and resizes before snapshotting. It keeps the surface at seven
    tools and reads naturally, but it does put a mutation on a tool whose name
    suggests it only observes.
@@ -583,7 +583,7 @@ hands them to an unbuffered pipe.
 Nothing drained that pipe in the first implementation, so the first `vim`
 session deadlocked the entire daemon: the emulator blocked mid-write while
 holding its lock, and every snapshot from every session blocked behind it. The
-symptom was `it_list` hanging while `status` still worked.
+symptom was `terminal_list` hanging while `status` still worked.
 
 `internal/vterm` now owns a goroutine that is the only caller of the emulator's
 `Read`, and `Session.answerQueries` forwards those replies to the PTY. Both the
@@ -630,8 +630,8 @@ fallback is stable and per-user.
   argument before the handler runs, with a message like
   `validating "arguments": validating root: validating /properties/wait: ...`.
   The framing is stripped and the argument name preserved.
-- **`it_send` does not advertise an empty log.** A session that lived entirely
-  inside a full-screen program has no transcript, so pointing at `it_tail`
+- **`terminal_send` does not advertise an empty log.** A session that lived entirely
+  inside a full-screen program has no transcript, so pointing at `terminal_tail`
   would cost a round trip to learn nothing.
 
 ## 13. Test Coverage

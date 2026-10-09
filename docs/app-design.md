@@ -133,7 +133,7 @@ In raw mode, `ctrl+q` still returns to Home. Nothing else is intercepted.
   actually reports.
 - `enter` submits. A multi-line buffer is submitted as a bracketed paste when
   the program has bracketed paste enabled, so an editor receives it as one
-  paste rather than as a sequence of commands — the same rule `it_send` uses.
+  paste rather than as a sequence of commands — the same rule `terminal_send` uses.
 - `ctrl+v` pastes from the system clipboard; a bracketed paste arriving from the
   outer terminal is captured natively, so `cmd+v` and middle-click work too.
   Pasted text is inserted literally, never executed, even when it contains
@@ -224,7 +224,7 @@ and save nothing.
 | Daemon not running | Home shows `Starting session daemon…`, autostarts it, then loads. Failure shows the reason and a `doctor` hint rather than an empty list. |
 | Daemon dies while open | A banner replaces the footer; the application retries with backoff and restores the view on reconnect. Composer input is preserved. |
 | Session exits while open | The frame title becomes `exited 1`, the composer is replaced by `Session ended (exit 1). ctrl+q back · enter new session here`. |
-| Session killed by the agent while open | Same, with `killed by it_kill`. |
+| Session killed by the agent while open | Same, with `killed by terminal_kill`. |
 | A flood of output | The view renders at most 30 fps from the latest state; it never queues frames. A slow human view can never slow down an agent's tool call. |
 | Terminal too small | Below 60x20 the frame is dropped and a `terminal too small (60x20 needed)` message is shown, restoring itself on resize. |
 | No TTY | The application refuses to start and points at `interactive-terminal-mcp mcp`. |
