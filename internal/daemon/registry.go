@@ -27,7 +27,7 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // entry is one session the daemon knows about. A retained entry has no live
 // session: its process is gone, but its logs are still readable, which is what
-// lets it_tail work after a build finished or after a daemon restart.
+// lets terminal_tail work after a build finished or after a daemon restart.
 type entry struct {
 	live      *session.Session
 	metadata  session.Metadata
@@ -128,7 +128,7 @@ func (r *registry) reload(settings config.Config) {
 //
 // Their processes are gone, but their transcripts are not: an agent that ran a
 // build before the client restarted can still read how it ended. They are
-// loaded as retained entries so it_list, it_tail, and it_head keep working.
+// loaded as retained entries so terminal_list, terminal_tail, and terminal_head keep working.
 func (r *registry) recover() {
 	directories, err := os.ReadDir(r.paths.Sessions)
 	if err != nil {
@@ -190,7 +190,7 @@ func (r *registry) resolve(reference string) (*entry, error) {
 		return nil, &ipc.Error{
 			Code:    ipc.CodeInvalidInput,
 			Message: "a session id or name is required",
-			Hint:    "Every tool takes the session it acts on. Call it_list() to see what exists, or it_new() to start one.",
+			Hint:    "Every tool takes the session it acts on. Call terminal_list() to see what exists, or terminal_new() to start one.",
 		}
 	}
 	r.mu.RLock()
@@ -219,7 +219,7 @@ func (r *registry) resolve(reference string) (*entry, error) {
 	return nil, &ipc.Error{
 		Code:    ipc.CodeSessionNotFound,
 		Message: fmt.Sprintf("no session matches %q", reference),
-		Hint:    "Call it_list() to see existing sessions, or it_new() to create one.",
+		Hint:    "Call terminal_list() to see existing sessions, or terminal_new() to create one.",
 		Fields:  map[string]any{"session": reference},
 	}
 }
@@ -246,9 +246,9 @@ func exitedError(found *entry) *ipc.Error {
 	return &ipc.Error{
 		Code:    ipc.CodeSessionExited,
 		Message: message,
-		Hint: "Its screen and logs are still readable with it_read, it_tail, and it_head. " +
+		Hint: "Its screen and logs are still readable with terminal_read, terminal_tail, and terminal_head. " +
 			"A session ends when its shell does, so this one was exited or killed. " +
-			"Start another with it_new({}).",
+			"Start another with terminal_new({}).",
 		Fields: fields,
 	}
 }
@@ -393,7 +393,7 @@ func (r *registry) nameAvailable(name, exceptID string) error {
 			return &ipc.Error{
 				Code:    ipc.CodeNameConflict,
 				Message: fmt.Sprintf("a running session is already named %q", name),
-				Hint:    fmt.Sprintf("Use it_send({\"session\":%q,...}) to reach it, choose a different name, or end it with it_kill({\"session\":%q}).", name, name),
+				Hint:    fmt.Sprintf("Use terminal_send({\"session\":%q,...}) to reach it, choose a different name, or end it with terminal_kill({\"session\":%q}).", name, name),
 				Fields:  map[string]any{"name": name, "session": candidate.id()},
 			}
 		}

@@ -409,7 +409,7 @@ func (v *sessionView) handle(message terminalMsg) tea.Cmd {
 
 // encodeKey converts a bubbletea key into terminal bytes for raw mode.
 //
-// It reuses the same encoder the it_send keys argument uses, so a keystroke a
+// It reuses the same encoder the terminal_send keys argument uses, so a keystroke a
 // person types and a keystroke an agent sends reach the program identically.
 func encodeKey(message tea.KeyMsg, modes vterm.Modes) []byte {
 	if message.Type == tea.KeyRunes {

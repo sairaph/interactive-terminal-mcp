@@ -49,7 +49,7 @@ func (m Metadata) Running() bool { return m.ExitedAt == nil }
 // Two files are kept for different readers. raw.log is the exact PTY byte
 // stream, which the human application replays to reconstruct a screen
 // faithfully. transcript.log is text, one line per line evicted off the top of
-// the screen, which it_tail and it_head read. Neither can serve the other's
+// the screen, which terminal_tail and terminal_head read. Neither can serve the other's
 // purpose: raw bytes are meaningless as text, and text cannot restore colour
 // or cursor state.
 type logStore struct {
@@ -161,7 +161,7 @@ func (s *logStore) writeTranscript(lines []string) {
 //
 // The oldest lines go rather than the newest: a session that has produced more
 // than the cap is almost always a long-running process whose recent output
-// matters. it_head reports the loss instead of pretending the log is complete.
+// matters. terminal_head reports the loss instead of pretending the log is complete.
 func (s *logStore) truncateTranscript() {
 	_ = s.transcriptWriter.Flush()
 	path := filepath.Join(s.directory, "transcript.log")

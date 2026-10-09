@@ -12,7 +12,7 @@ import (
 	"github.com/sairaph/interactive-terminal-mcp/internal/ipc"
 )
 
-// --- it_list ----------------------------------------------------------------
+// --- terminal_list ----------------------------------------------------------------
 
 type listInput struct {
 	Page    int  `json:"page,omitempty"`
@@ -28,7 +28,7 @@ func (s *Service) list(ctx context.Context, _ *mcp.CallToolRequest, input listIn
 		return errorResult(&ipc.Error{
 			Code:    ipc.CodeInvalidInput,
 			Message: "page must be 1 or greater",
-			Hint:    "Call it_list({}) for the first page.",
+			Hint:    "Call terminal_list({}) for the first page.",
 			Fields:  map[string]any{"page": input.Page},
 		}), nil, nil
 	}
@@ -44,7 +44,7 @@ func (s *Service) list(ctx context.Context, _ *mcp.CallToolRequest, input listIn
 	return successResult(front, body), nil, nil
 }
 
-// --- it_new -----------------------------------------------------------------
+// --- terminal_new -----------------------------------------------------------------
 
 type newInput struct {
 	WaitFor string `json:"wait_for,omitempty"`
@@ -114,7 +114,7 @@ func decodeCommand(raw json.RawMessage) (commandLine string, argv []string, err 
 	}
 }
 
-// --- it_read ----------------------------------------------------------------
+// --- terminal_read ----------------------------------------------------------------
 
 type readInput struct {
 	WaitFor string `json:"wait_for,omitempty"`
@@ -141,7 +141,7 @@ func (s *Service) read(ctx context.Context, _ *mcp.CallToolRequest, input readIn
 	return successResult(screenFront(screen), screenBody(screen, readGuidance(screen))), nil, nil
 }
 
-// --- it_send ----------------------------------------------------------------
+// --- terminal_send ----------------------------------------------------------------
 
 type sendInput struct {
 	WaitFor string `json:"wait_for,omitempty"`
@@ -157,8 +157,8 @@ func (s *Service) send(ctx context.Context, _ *mcp.CallToolRequest, input sendIn
 	if input.Text == nil && input.Keys == nil {
 		return errorResult(&ipc.Error{
 			Code:    ipc.CodeInvalidInput,
-			Message: "it_send needs text, keys, or both",
-			Hint:    `Use text to type a command, as in it_send({"text":"ls -la"}), or keys for keystrokes, as in it_send({"keys":"CTRL+C"}).`,
+			Message: "terminal_send needs text, keys, or both",
+			Hint:    `Use text to type a command, as in terminal_send({"text":"ls -la"}), or keys for keystrokes, as in terminal_send({"keys":"CTRL+C"}).`,
 		}), nil, nil
 	}
 	wait, err := s.waitMilliseconds(input.Wait, s.settings.DefaultWaitSeconds)
@@ -189,7 +189,7 @@ func (s *Service) send(ctx context.Context, _ *mcp.CallToolRequest, input sendIn
 	return successResult(screenFront(screen), screenBody(screen, sendGuidance(screen))), nil, nil
 }
 
-// --- it_kill ----------------------------------------------------------------
+// --- terminal_kill ----------------------------------------------------------------
 
 type killInput struct {
 	Session string `json:"session"`
@@ -205,7 +205,7 @@ func (s *Service) kill(ctx context.Context, _ *mcp.CallToolRequest, input killIn
 	return successResult(killFront(result), killBody(result)), nil, nil
 }
 
-// --- it_tail and it_head ----------------------------------------------------
+// --- terminal_tail and terminal_head ----------------------------------------------------
 
 type logInput struct {
 	Session string `json:"session,omitempty"`
@@ -226,9 +226,9 @@ func (s *Service) head(ctx context.Context, _ *mcp.CallToolRequest, input logInp
 }
 
 func (s *Service) readLog(ctx context.Context, input logInput, fromEnd, includeScreen bool) (*mcp.CallToolResult, any, error) {
-	tool := "it_head"
+	tool := "terminal_head"
 	if fromEnd {
-		tool = "it_tail"
+		tool = "terminal_tail"
 	}
 	lines := input.Lines
 	if lines == 0 {
@@ -281,7 +281,7 @@ func (s *Service) waitMilliseconds(wait *float64, defaultSeconds int) (int64, er
 			Code:    ipc.CodeInvalidInput,
 			Message: fmt.Sprintf("wait must be at most %d seconds, got %v", s.settings.MaximumWaitSeconds, seconds),
 			Hint: fmt.Sprintf(
-				"Use a shorter wait and call it_read again to keep checking. The limit can be raised in `interactive-terminal-mcp configure`."),
+				"Use a shorter wait and call terminal_read again to keep checking. The limit can be raised in `interactive-terminal-mcp configure`."),
 			Fields: map[string]any{"field": "wait", "maximum": s.settings.MaximumWaitSeconds},
 		}
 	}

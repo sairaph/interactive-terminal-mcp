@@ -15,8 +15,8 @@ func TestCountIsStable(t *testing.T) {
 	}
 }
 
-// Truncation direction is the whole point: it_tail must keep the newest lines
-// and it_head the oldest, so the caller always gets the end it asked for.
+// Truncation direction is the whole point: terminal_tail must keep the newest lines
+// and terminal_head the oldest, so the caller always gets the end it asked for.
 func TestFitLinesKeepsTheRequestedEnd(t *testing.T) {
 	lines := []string{"first", "second", "third", "fourth", "fifth"}
 

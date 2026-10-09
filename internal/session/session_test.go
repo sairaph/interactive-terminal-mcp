@@ -171,7 +171,7 @@ func TestWaitSettledReturnsOnExit(t *testing.T) {
 }
 
 // Output that scrolls off the top must reach the transcript; that is the only
-// way it_tail reaches further back than the visible screen.
+// way terminal_tail reaches further back than the visible screen.
 func TestTranscriptCapturesScrolledOffOutput(t *testing.T) {
 	session := newTestSession(t, Options{
 		Rows:        10,
@@ -204,7 +204,7 @@ func TestTranscriptCapturesScrolledOffOutput(t *testing.T) {
 }
 
 // Alternate-screen output never scrolls, so it is correctly absent from the
-// transcript. The contract documents this and it_tail compensates by appending
+// transcript. The contract documents this and terminal_tail compensates by appending
 // the live screen; this test pins the behaviour so it cannot drift silently.
 func TestAlternateScreenOutputIsNotInTranscript(t *testing.T) {
 	session := newTestSession(t, Options{Argv: []string{"sh"}})
@@ -286,7 +286,7 @@ func TestKillTerminatesAndRecordsCause(t *testing.T) {
 	session := newTestSession(t, Options{CommandLine: "sleep 60"})
 	waitForScreen(t, session, "", 1*time.Second) // let it start
 
-	if err := session.Kill("TERM", "it_kill"); err != nil {
+	if err := session.Kill("TERM", "terminal_kill"); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 	if !session.WaitExit(contextWithTimeout(t, 10*time.Second)) {
@@ -294,8 +294,8 @@ func TestKillTerminatesAndRecordsCause(t *testing.T) {
 	}
 	session.WaitFinalized(contextWithTimeout(t, 10*time.Second))
 	metadata := session.Metadata()
-	if metadata.KilledBy != "it_kill" {
-		t.Errorf("KilledBy: got %q, want %q", metadata.KilledBy, "it_kill")
+	if metadata.KilledBy != "terminal_kill" {
+		t.Errorf("KilledBy: got %q, want %q", metadata.KilledBy, "terminal_kill")
 	}
 	if metadata.ExitedAt == nil || metadata.ExitCode == nil {
 		t.Error("metadata should record the exit time and code")

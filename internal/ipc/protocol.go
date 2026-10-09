@@ -187,7 +187,7 @@ type KillArgs struct {
 	// Purge forgets the session entirely rather than retaining it.
 	//
 	// Killing and deleting are different intents. An agent that ends a build
-	// still wants to read what it printed, so it_kill retains the session under
+	// still wants to read what it printed, so terminal_kill retains the session under
 	// the configured log policy. A person who chose "Delete" in the application
 	// wants it gone, and leaving the row on screen reads as a broken button.
 	Purge bool `json:"purge,omitempty"`

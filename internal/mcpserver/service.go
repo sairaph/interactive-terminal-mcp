@@ -29,9 +29,9 @@ const (
 // detail, and a long preamble is paid for on every request.
 const Instructions = `Persistent terminal sessions. Each session is a real shell that keeps running between tool calls, so you can start a long command, do something else, and come back to it.
 
-Typical flow: it_list to see whether a session already exists, it_new to create one, it_send to run commands, it_read to check on them, it_tail for output that has scrolled away.
+Typical flow: terminal_list to see whether a session already exists, terminal_new to create one, terminal_send to run commands, terminal_read to check on them, terminal_tail for output that has scrolled away.
 
-Every tool that touches a session takes its id or name; there is no current session. it_new returns the id to use.
+Every tool that touches a session takes its id or name; there is no current session. terminal_new returns the id to use.
 
 Sessions support full-screen programs (vim, htop, less). Send keystrokes to them with the keys argument.`
 
@@ -117,16 +117,16 @@ func (s *Service) call(ctx context.Context, op string, args any, result any) err
 
 func (s *Service) registerTools() {
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_list",
+		Name: "terminal_list",
 		Description: "List all terminal sessions, running and recently ended, newest activity first. " +
 			"Each entry carries its id, name, whether it is running, its exit code, the command it runs, " +
 			"and how many lines its log holds. Set verbose for working directory, terminal size, and log path. " +
-			"Use it to find a session to reuse with it_send rather than starting another with it_new.",
+			"Use it to find a session to reuse with terminal_send rather than starting another with terminal_new.",
 		InputSchema: listSchema(),
 	}, s.list)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_new",
+		Name: "terminal_new",
 		Description: "Create a terminal session and return its first screen, along with the id every other tool needs. " +
 			"The session is " + defaultShellPhrase() + " and stays open until you end it, whatever you run in it. " +
 			"Pass command to have it typed in and run straight away, the way you would type it yourself; when it " +
@@ -135,12 +135,12 @@ func (s *Service) registerTools() {
 			"A shell can take seconds to reach a prompt on a machine with heavy startup files; that time is " +
 			"reported as startup_ms and comes out of wait rather than being added to it, and shell_ready: false " +
 			"means the command is queued rather than finished. " +
-			"Type into it later with it_send, and read it with it_read.",
+			"Type into it later with terminal_send, and read it with terminal_read.",
 		InputSchema: newSchema(s.settings),
 	}, s.new)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_read",
+		Name: "terminal_read",
 		Description: "Return the current screen of a terminal session. " +
 			"Use it to check on a command started earlier, or to see the current state of a full-screen program. " +
 			"wait bounds how long the capture waits for output to stop changing, so it helps with a command that " +
@@ -150,42 +150,42 @@ func (s *Service) registerTools() {
 			"run yet however quiet the screen looks; it is queued and runs when the shell prompts. " +
 			"wait_for is exact. command_exit, where the shell reports it, is the status of the last command " +
 			"that finished, which is not necessarily the one you just started. " +
-			"For output that has already scrolled past, use it_tail.",
+			"For output that has already scrolled past, use terminal_tail.",
 		InputSchema: readSchema(s.settings),
 	}, s.read)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_send",
+		Name: "terminal_send",
 		Description: "Type into a terminal session and return the screen afterwards. " +
 			"Use text to type a command; it is submitted with Enter unless you set enter to false. " +
 			"Use keys for keystrokes a full-screen program needs, such as \"CTRL+C\", \"ESC; :wq; ENTER\", or \"DOWN*5\". " +
-			"Both can be sent in one call; text goes first. Read the session again later with it_read.",
+			"Both can be sent in one call; text goes first. Read the session again later with terminal_read.",
 		InputSchema: sendSchema(s.settings),
 	}, s.send)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_kill",
+		Name: "terminal_kill",
 		Description: "End a terminal session. Check the id you pass: ending the wrong terminal cannot be undone. " +
 			"Sends TERM by default and escalates to KILL if the process does not exit. " +
 			"INT asks the running command to stop and leaves the session usable, and the reply reports whether it " +
-			"actually stopped. Find the session to end with it_list.",
+			"actually stopped. Find the session to end with terminal_list.",
 		InputSchema: killSchema(),
 	}, s.kill)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_tail",
+		Name: "terminal_tail",
 		Description: "Return the most recent lines of a session's output log, plus its current screen. " +
 			"The log holds only what has scrolled off the top, so the newest output is on the screen rather than in it; " +
 			"both are returned and labelled. Output from full-screen programs never scrolls and so is never in the log. " +
 			"log_path in the reply is a real file you can open with ordinary file tools to reach anything not returned here. " +
-			"Use it_head for the start of the log.",
+			"Use terminal_head for the start of the log.",
 		InputSchema: logSchema(true),
 	}, s.tail)
 
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name: "it_head",
+		Name: "terminal_head",
 		Description: "Return the earliest lines of a session's output log. " +
-			"Use it to see how a session started, such as the first errors of a build whose ending you have already read with it_tail. " +
+			"Use it to see how a session started, such as the first errors of a build whose ending you have already read with terminal_tail. " +
 			"log_path in the reply is a real file you can open with ordinary file tools to reach the middle, which neither end returns.",
 		InputSchema: logSchema(false),
 	}, s.head)
@@ -217,7 +217,7 @@ func stringProperty(description string) map[string]any {
 // with no error and no way to tell from the reply. Naming the target is the
 // only thing that makes concurrent use safe.
 func sessionProperty() map[string]any {
-	return stringProperty("Session id or name, as returned by it_new or it_list. Required.")
+	return stringProperty("Session id or name, as returned by terminal_new or terminal_list. Required.")
 }
 
 func pageProperty() map[string]any {
@@ -318,8 +318,8 @@ func newSchema(settings config.Config) map[string]any {
 		"wait": waitProperty(settings, settings.DefaultWaitSeconds,
 			"It covers the shell's own startup as well as the command, so raise it for a shell that is slow to "+
 				"start; the reply reports startup_ms and shell_ready."),
-		// it_new types the command it was given, so the same rule applies here
-		// as to it_send.
+		// terminal_new types the command it was given, so the same rule applies here
+		// as to terminal_send.
 		"wait_for": waitForProperty(true),
 	})
 }
@@ -340,7 +340,7 @@ func busyPhrase() string {
 		"and a shell doing its own work has none."
 }
 
-// defaultShellPhrase names the interpreter a bare it_new will start, so a model
+// defaultShellPhrase names the interpreter a bare terminal_new will start, so a model
 // writing a command line knows which syntax applies before it guesses wrong.
 func defaultShellPhrase() string {
 	shell := session.DefaultShell()
@@ -414,14 +414,14 @@ func sendSchema(settings config.Config) map[string]any {
 
 func killSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"session": stringProperty("Session id or name to end, as returned by it_new or it_list. Required."),
+		"session": stringProperty("Session id or name to end, as returned by terminal_new or terminal_list. Required."),
 		"signal": map[string]any{
 			"type": "string", "enum": []any{"TERM", "INT", "HUP", "KILL"}, "default": "TERM",
 			"description": "TERM asks the session to end and escalates to KILL after 5 seconds. " +
 				"INT sends Ctrl-C to the running command and leaves the session usable; a program may ignore it, " +
 				"and the reply says whether the command stopped. It is delivered as the interrupt character, so it " +
 				"reaches whatever owns the terminal right now, including a command running inside ssh, tmux, or a " +
-				"nested shell. it_send({\"keys\":\"CTRL+C\"}) does the same thing. " +
+				"nested shell. terminal_send({\"keys\":\"CTRL+C\"}) does the same thing. " +
 				"HUP reports the terminal as closed and ends the session, escalating to KILL like TERM; " +
 				"use it for a program that treats a lost terminal differently from a request to quit. " +
 				"KILL ends the session immediately and cannot be refused.",
@@ -484,7 +484,7 @@ func renderSDKToolErrors(next mcp.MethodHandler) mcp.MethodHandler {
 			// The most likely mistake by far, and the generic hint does not
 			// answer it. Say where a session id comes from.
 			hint = "Name the session to act on, as in " + name +
-				`({"session":"build", ...}). Call it_list() to see what exists, or it_new() to start one.`
+				`({"session":"build", ...}). Call terminal_list() to see what exists, or terminal_new() to start one.`
 		}
 		return errorResult(&ipc.Error{
 			Code:    ipc.CodeInvalidInput,

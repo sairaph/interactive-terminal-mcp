@@ -90,7 +90,7 @@ func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[st
 	// most of the budget of a test that then expected 300 lines of output
 	// inside 20 seconds. What these tests are about is the tool layer, not
 	// whose dotfiles are installed.
-	if name == "it_new" {
+	if name == "terminal_new" {
 		if _, named := args["shell"]; !named {
 			args["shell"] = "sh"
 		}
@@ -135,13 +135,13 @@ func TestAllToolsAreRegistered(t *testing.T) {
 				tool.Name, len(tool.Description), tool.Description)
 		}
 		// Naming a related tool gives a model a path from one call to the next.
-		if !strings.Contains(tool.Description, "it_") {
+		if !strings.Contains(tool.Description, "terminal_") {
 			t.Errorf("%s should reference a related tool: %q", tool.Name, tool.Description)
 		}
 	}
 	for _, want := range []string{
-		"it_list", "it_new", "it_read",
-		"it_send", "it_kill", "it_tail", "it_head",
+		"terminal_list", "terminal_new", "terminal_read",
+		"terminal_send", "terminal_kill", "terminal_tail", "terminal_head",
 	} {
 		if !found[want] {
 			t.Errorf("%s was not registered", want)
@@ -157,48 +157,48 @@ func TestAllToolsAreRegistered(t *testing.T) {
 func TestDocumentedWorkflow(t *testing.T) {
 	session := newLiveService(t)
 
-	body, isError := callTool(t, session, "it_list", map[string]any{})
+	body, isError := callTool(t, session, "terminal_list", map[string]any{})
 	if isError {
-		t.Fatalf("it_list on an empty daemon should not be an error:\n%s", body)
+		t.Fatalf("terminal_list on an empty daemon should not be an error:\n%s", body)
 	}
 	if !strings.Contains(body, "No terminal sessions exist") {
-		t.Errorf("it_list should report an empty daemon:\n%s", body)
+		t.Errorf("terminal_list should report an empty daemon:\n%s", body)
 	}
 
-	body, isError = callTool(t, session, "it_new", map[string]any{"name": "work", "wait": 3})
+	body, isError = callTool(t, session, "terminal_new", map[string]any{"name": "work", "wait": 3})
 	if isError {
-		t.Fatalf("it_new failed:\n%s", body)
+		t.Fatalf("terminal_new failed:\n%s", body)
 	}
 	if !strings.Contains(body, "name: work") || !strings.Contains(body, "running: true") {
-		t.Errorf("it_new frontmatter is wrong:\n%s", body)
+		t.Errorf("terminal_new frontmatter is wrong:\n%s", body)
 	}
 
-	body, isError = callTool(t, session, "it_send", map[string]any{
+	body, isError = callTool(t, session, "terminal_send", map[string]any{
 		"session": "work", "text": "PS1=''; echo workflow-ok", "wait": 8,
 	})
 	if isError {
-		t.Fatalf("it_send failed:\n%s", body)
+		t.Fatalf("terminal_send failed:\n%s", body)
 	}
 	if !strings.Contains(body, "workflow-ok") {
 		t.Errorf("the command output should be on the screen:\n%s", body)
 	}
 
-	body, _ = callTool(t, session, "it_read", map[string]any{"session": "work"})
+	body, _ = callTool(t, session, "terminal_read", map[string]any{"session": "work"})
 	if !strings.Contains(body, "session: ") {
-		t.Errorf("it_read should return a screen document:\n%s", body)
+		t.Errorf("terminal_read should return a screen document:\n%s", body)
 	}
 
-	body, _ = callTool(t, session, "it_list", map[string]any{})
+	body, _ = callTool(t, session, "terminal_list", map[string]any{})
 	if !strings.Contains(body, "name: work") {
-		t.Errorf("it_list should show the session:\n%s", body)
+		t.Errorf("terminal_list should show the session:\n%s", body)
 	}
 
-	body, isError = callTool(t, session, "it_kill", map[string]any{"session": "work"})
+	body, isError = callTool(t, session, "terminal_kill", map[string]any{"session": "work"})
 	if isError {
-		t.Fatalf("it_kill failed:\n%s", body)
+		t.Fatalf("terminal_kill failed:\n%s", body)
 	}
 	if !strings.Contains(body, "killed: ") {
-		t.Errorf("it_kill should report what it ended:\n%s", body)
+		t.Errorf("terminal_kill should report what it ended:\n%s", body)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestDocumentedWorkflow(t *testing.T) {
 func TestCommandAcceptsBothForms(t *testing.T) {
 	session := newLiveService(t)
 
-	body, isError := callTool(t, session, "it_new", map[string]any{
+	body, isError := callTool(t, session, "terminal_new", map[string]any{
 		"name": "shellform", "command": "echo one && echo two", "wait": 5,
 	})
 	if isError {
@@ -217,7 +217,7 @@ func TestCommandAcceptsBothForms(t *testing.T) {
 		t.Errorf("shell syntax should have been interpreted:\n%s", body)
 	}
 
-	body, isError = callTool(t, session, "it_new", map[string]any{
+	body, isError = callTool(t, session, "terminal_new", map[string]any{
 		"name": "argvform", "command": []any{"echo", "a b c"}, "wait": 5,
 	})
 	if isError {
@@ -241,7 +241,7 @@ func TestKeysDriveAFullScreenProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, isError := callTool(t, session, "it_new", map[string]any{
+	body, isError := callTool(t, session, "terminal_new", map[string]any{
 		"name": "pager", "command": []any{"less", "-X", target},
 		"cols": 40, "rows": 12, "wait": 20, "wait_for": "line-1",
 	})
@@ -254,7 +254,7 @@ func TestKeysDriveAFullScreenProgram(t *testing.T) {
 
 	// Paging must actually move the pager, which only works if the key bytes
 	// are encoded the way it expects.
-	body, isError = callTool(t, session, "it_send", map[string]any{
+	body, isError = callTool(t, session, "terminal_send", map[string]any{
 		"session": "pager", "keys": "PAGE_DOWN; PAGE_DOWN", "wait": 4,
 	})
 	if isError {
@@ -264,41 +264,41 @@ func TestKeysDriveAFullScreenProgram(t *testing.T) {
 		t.Errorf("the pager should have scrolled away from the top:\n%s", body)
 	}
 
-	callTool(t, session, "it_send", map[string]any{"session": "pager", "keys": "q", "wait": 4})
+	callTool(t, session, "terminal_send", map[string]any{"session": "pager", "keys": "q", "wait": 4})
 }
 
 func TestErrorsAreTypedAndActionable(t *testing.T) {
 	session := newLiveService(t)
 
-	body, isError := callTool(t, session, "it_read", map[string]any{"session": "nope"})
+	body, isError := callTool(t, session, "terminal_read", map[string]any{"session": "nope"})
 	if !isError {
 		t.Fatal("an unknown session should be an error")
 	}
 	if !strings.Contains(body, "code: session_not_found") {
 		t.Errorf("the error should be typed:\n%s", body)
 	}
-	if !strings.Contains(body, "it_list()") {
+	if !strings.Contains(body, "terminal_list()") {
 		t.Errorf("the error should name a concrete next call:\n%s", body)
 	}
 
-	// it_kill never falls back to the active session.
-	body, isError = callTool(t, session, "it_kill", map[string]any{})
+	// terminal_kill never falls back to the active session.
+	body, isError = callTool(t, session, "terminal_kill", map[string]any{})
 	if !isError {
-		t.Fatal("it_kill without a session should be an error")
+		t.Fatal("terminal_kill without a session should be an error")
 	}
 
 	// Neither text nor keys leaves nothing to send.
-	callTool(t, session, "it_new", map[string]any{"name": "target", "wait": 2})
-	body, isError = callTool(t, session, "it_send", map[string]any{"session": "target"})
+	callTool(t, session, "terminal_new", map[string]any{"name": "target", "wait": 2})
+	body, isError = callTool(t, session, "terminal_send", map[string]any{"session": "target"})
 	if !isError {
-		t.Fatal("it_send with no input should be an error")
+		t.Fatal("terminal_send with no input should be an error")
 	}
 	if !strings.Contains(body, "text, keys, or both") {
 		t.Errorf("the error should say what is missing:\n%s", body)
 	}
 
 	// An unparseable key sequence must send nothing and say why.
-	body, isError = callTool(t, session, "it_send", map[string]any{"session": "target", "keys": "NOT_A_KEY"})
+	body, isError = callTool(t, session, "terminal_send", map[string]any{"session": "target", "keys": "NOT_A_KEY"})
 	if !isError {
 		t.Fatal("an invalid key sequence should be an error")
 	}
@@ -309,9 +309,9 @@ func TestErrorsAreTypedAndActionable(t *testing.T) {
 
 func TestWaitCeilingIsEnforced(t *testing.T) {
 	session := newLiveService(t)
-	callTool(t, session, "it_new", map[string]any{"wait": 2})
+	callTool(t, session, "terminal_new", map[string]any{"wait": 2})
 
-	body, isError := callTool(t, session, "it_read", map[string]any{"wait": 100000})
+	body, isError := callTool(t, session, "terminal_read", map[string]any{"wait": 100000})
 	if !isError {
 		t.Fatal("a wait above the configured ceiling should be rejected")
 	}
@@ -329,15 +329,15 @@ func TestWaitCeilingIsEnforced(t *testing.T) {
 // even when a generous budget is offered.
 func TestGenerousWaitReturnsEarlyForAFastCommand(t *testing.T) {
 	session := newLiveService(t)
-	callTool(t, session, "it_new", map[string]any{"name": "quick", "wait": 3})
+	callTool(t, session, "terminal_new", map[string]any{"name": "quick", "wait": 3})
 
 	start := time.Now()
-	body, isError := callTool(t, session, "it_send", map[string]any{
+	body, isError := callTool(t, session, "terminal_send", map[string]any{
 		"session": "quick", "text": "PS1=''; echo fast", "wait": 60,
 	})
 	elapsed := time.Since(start)
 	if isError {
-		t.Fatalf("it_send failed:\n%s", body)
+		t.Fatalf("terminal_send failed:\n%s", body)
 	}
 	if elapsed > 15*time.Second {
 		t.Errorf("a generous wait should not be spent on a fast command, took %v", elapsed)
@@ -349,16 +349,16 @@ func TestGenerousWaitReturnsEarlyForAFastCommand(t *testing.T) {
 
 func TestTailReturnsLogAndScreen(t *testing.T) {
 	session := newLiveService(t)
-	callTool(t, session, "it_new", map[string]any{
+	callTool(t, session, "terminal_new", map[string]any{
 		"name": "noisy", "rows": 10, "cols": 60,
 		"command":  "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 30",
 		"wait":     20,
 		"wait_for": "line-300",
 	})
 
-	body, isError := callTool(t, session, "it_tail", map[string]any{"session": "noisy", "lines": 5})
+	body, isError := callTool(t, session, "terminal_tail", map[string]any{"session": "noisy", "lines": 5})
 	if isError {
-		t.Fatalf("it_tail failed:\n%s", body)
+		t.Fatalf("terminal_tail failed:\n%s", body)
 	}
 	if !strings.Contains(body, "Live screen:") {
 		t.Errorf("tail should append the live screen by default:\n%s", body)
@@ -367,7 +367,7 @@ func TestTailReturnsLogAndScreen(t *testing.T) {
 		t.Errorf("tail should report the log size:\n%s", body)
 	}
 
-	body, _ = callTool(t, session, "it_head", map[string]any{"session": "noisy", "lines": 40})
+	body, _ = callTool(t, session, "terminal_head", map[string]any{"session": "noisy", "lines": 40})
 	if !strings.Contains(body, "line-1") {
 		t.Errorf("head should reach the oldest output:\n%s", body)
 	}
@@ -384,7 +384,7 @@ func TestUnknownArgumentsAreRejected(t *testing.T) {
 	defer cancel()
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "it_list",
+		Name:      "terminal_list",
 		Arguments: map[string]any{"nonsense": true},
 	})
 	if err != nil {

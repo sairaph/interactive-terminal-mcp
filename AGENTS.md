@@ -38,7 +38,7 @@
   terminal on startup and block for the answer; an undrained emulator deadlocks
   every session. See `Session.answerQueries`.
 - **Alternate-screen output never reaches the transcript.** That is correct
-  terminal behaviour, not a bug. `it_tail` compensates by returning the live
+  terminal behaviour, not a bug. `terminal_tail` compensates by returning the live
   screen; don't "fix" it by writing alt-screen frames to the log.
 - **Agent-facing strings are part of the contract.** Every error carries a
   concrete next tool call, and truncation always reports what was dropped plus a

@@ -314,11 +314,11 @@ func fail(options Options, err error) int {
 // their own terms.
 func humanHint(hint string) string {
 	replacements := []struct{ from, to string }{
-		// The longer form is replaced first; otherwise "it_list()" would match
-		// inside "it_list({})" and leave a stray "{})" behind.
-		{`it_list({})`, "`interactive-terminal-mcp ls`"},
-		{"it_list()", "`interactive-terminal-mcp ls`"},
-		{"it_new({})", "`interactive-terminal-mcp new`"},
+		// The longer form is replaced first; otherwise "terminal_list()" would match
+		// inside "terminal_list({})" and leave a stray "{})" behind.
+		{`terminal_list({})`, "`interactive-terminal-mcp ls`"},
+		{"terminal_list()", "`interactive-terminal-mcp ls`"},
+		{"terminal_new({})", "`interactive-terminal-mcp new`"},
 	}
 	for _, replacement := range replacements {
 		hint = strings.ReplaceAll(hint, replacement.from, replacement.to)

@@ -49,7 +49,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 		return ipc.Screen{}, &ipc.Error{
 			Code:    ipc.CodeTooManySessions,
 			Message: fmt.Sprintf("%d sessions are already running, which is the configured maximum", live),
-			Hint:    "End a session with it_kill({\"session\":\"<id>\"}), or raise the limit in `interactive-terminal-mcp configure`.",
+			Hint:    "End a session with terminal_kill({\"session\":\"<id>\"}), or raise the limit in `interactive-terminal-mcp configure`.",
 			Fields:  map[string]any{"live_sessions": live, "maximum": settings.MaximumSessions},
 		}
 	}
@@ -91,7 +91,7 @@ func (d *Daemon) handleNew(ctx context.Context, args ipc.NewArgs) (ipc.Screen, e
 		return ipc.Screen{}, &ipc.Error{
 			Code:    ipc.CodeInvalidInput,
 			Message: err.Error(),
-			Hint:    "Check the command, working directory, and environment, then retry it_new.",
+			Hint:    "Check the command, working directory, and environment, then retry terminal_new.",
 		}
 	}
 	d.registry.add(live, directory)
@@ -159,7 +159,7 @@ func (d *Daemon) handleRead(ctx context.Context, args ipc.ReadArgs) (ipc.Screen,
 		}
 	}
 
-	// it_read writes nothing, so what it is asking about is the screen as it
+	// terminal_read writes nothing, so what it is asking about is the screen as it
 	// stands -- minus the echo of whatever was typed last, which is not a
 	// result however plainly it is on screen.
 	settled := d.wait(ctx, item.live, args.WaitMS, item.live.PollTarget(args.WaitFor), settings)
@@ -278,8 +278,8 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 	if strings.TrimSpace(args.Session) == "" {
 		return ipc.KillResult{}, &ipc.Error{
 			Code:    ipc.CodeInvalidInput,
-			Message: "session is required for it_kill",
-			Hint:    "Name the session to end, for example it_kill({\"session\":\"build\"}). It is never assumed, because ending the wrong terminal cannot be undone. Call it_list() to see what exists.",
+			Message: "session is required for terminal_kill",
+			Hint:    "Name the session to end, for example terminal_kill({\"session\":\"build\"}). It is never assumed, because ending the wrong terminal cannot be undone. Call terminal_list() to see what exists.",
 			Fields:  map[string]any{"field": "session"},
 		}
 	}
@@ -323,7 +323,7 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 	}
 
 	live := item.live
-	if err := live.Kill(signal, "it_kill"); err != nil && err != session.ErrExited {
+	if err := live.Kill(signal, "terminal_kill"); err != nil && err != session.ErrExited {
 		// A signal that reports failure while the process is on its way out is
 		// routine, especially on Windows where taskkill fails if any child has
 		// already gone. Only give up if the session is genuinely still alive
@@ -346,7 +346,7 @@ func (d *Daemon) handleKill(ctx context.Context, args ipc.KillArgs) (ipc.KillRes
 		exited := live.WaitExit(wait)
 		cancel()
 		if !exited && signal != "KILL" {
-			_ = live.Kill("KILL", "it_kill escalation")
+			_ = live.Kill("KILL", "terminal_kill escalation")
 			result.Escalated = true
 			wait, cancel := context.WithTimeout(ctx, escalateAfter)
 			live.WaitExit(wait)
@@ -717,7 +717,7 @@ func retainedScreenError(item *entry) error {
 	return &ipc.Error{
 		Code:    ipc.CodeSessionExited,
 		Message: fmt.Sprintf("session %s ended before this daemon started, so its screen is no longer available", describe(item)),
-		Hint:    "Its transcript is still readable with it_tail and it_head.",
+		Hint:    "Its transcript is still readable with terminal_tail and terminal_head.",
 		Fields:  map[string]any{"session": item.id()},
 	}
 }

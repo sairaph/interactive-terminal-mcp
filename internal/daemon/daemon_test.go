@@ -140,7 +140,7 @@ func TestSendAndReadRoundTrip(t *testing.T) {
 	}
 }
 
-// it_kill must never infer its target: ending the wrong terminal is not
+// terminal_kill must never infer its target: ending the wrong terminal is not
 // something an agent can undo.
 func TestKillRequiresAnExplicitSession(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
@@ -221,7 +221,7 @@ func TestInterruptLeavesTheSessionUsable(t *testing.T) {
 }
 
 // endSession leaves a session ended but still listed, which is what happens
-// when a shell exits on its own. it_kill would retire the entry under the
+// when a shell exits on its own. terminal_kill would retire the entry under the
 // default retention policy and remove it, so it cannot stand in for this.
 func endSession(t *testing.T, client *ipc.Client, reference string) {
 	t.Helper()
@@ -309,7 +309,7 @@ func TestUnknownSessionIsActionable(t *testing.T) {
 	if !ok || typed.Code != ipc.CodeSessionNotFound {
 		t.Fatalf("expected session_not_found, got %v", err)
 	}
-	if !strings.Contains(typed.Hint, "it_list") {
+	if !strings.Contains(typed.Hint, "terminal_list") {
 		t.Errorf("hint should name a concrete next call, got %q", typed.Hint)
 	}
 }
@@ -328,7 +328,7 @@ func TestOmittingTheSessionIsRejected(t *testing.T) {
 	if !ok || typed.Code != ipc.CodeInvalidInput {
 		t.Fatalf("expected invalid_input, got %v", err)
 	}
-	if !strings.Contains(typed.Hint, "it_list") {
+	if !strings.Contains(typed.Hint, "terminal_list") {
 		t.Errorf("hint should name a concrete next call, got %q", typed.Hint)
 	}
 }
@@ -491,7 +491,7 @@ func TestAReusedNameBelongsToTheLiveSession(t *testing.T) {
 	}
 }
 
-// The same bug reached it_kill, where it was worse than a failed read: the
+// The same bug reached terminal_kill, where it was worse than a failed read: the
 // kill landed on the corpse, reported already_ended as a success, and left the
 // live session running while the caller believed it was gone.
 func TestKillingByAReusedNameEndsTheLiveSession(t *testing.T) {
@@ -648,7 +648,7 @@ func TestWaitForMatchesAPromptEndingInASpace(t *testing.T) {
 	}
 }
 
-// wait: 0 means look now. Inventing a budget made it_read({wait_for}) block for
+// wait: 0 means look now. Inventing a budget made terminal_read({wait_for}) block for
 // thirty seconds while its own schema said the default was zero.
 func TestWaitForWithNoBudgetAnswersImmediately(t *testing.T) {
 	_, client, _ := newTestDaemon(t)
